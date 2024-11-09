@@ -1,0 +1,38 @@
+# Brick DVC stages
+# See https://dvc.org/doc/user-guide/project-structure/dvcyaml-files#pipelines-files-dvcyaml
+
+# The complete process can be executed using:
+# dvc repro
+# If you want to force redoing the process use 
+# dvc repro -f
+# Individual stage can be executed using: 
+# dvc repro <stage>
+
+stages:
+  download_zinc:
+    cmd: bash stages/01_download_zinc.sh 
+    deps:
+      - stages/01_download_zinc.sh
+    outs:
+      - download
+  build_zinc: 
+    cmd: stages/02_build_zinc.sh
+    deps:
+      - stages/02_build_zinc.sh
+      - download
+    outs:
+      - raw/zinc.parquet
+  filter_zinc_phthalates: 
+    cmd: python stages/03_filter_phtalates.py
+    deps:
+      - stages/03_filter_phtalates.py
+      - raw/zinc.parquet
+    outs:
+      - raw/zinc_phthalates
+  harmonize_zinc_phthalates: 
+    cmd: python stages/04_add_chemharmony_fields.py
+    deps:
+      - stages/04_add_chemharmony_fields.py
+      - raw/zinc_phthalates
+    outs:
+      - raw/harmonized_phthalates
