@@ -1,5 +1,8 @@
 # Phthalates Data Aggregation and Analysis (PDAA)
 
+## Resources
+- [google drive folder](https://drive.google.com/drive/folders/1bj4s3G3d6bLRhCHrCUK-s9ka8AvT2wxq?usp=drive_link)
+
 ## Overview
 
 This repository contains the code, data structures, and documentation for the **Phthalates Data Aggregation and Analysis (PDAA)** project, developed by Insilica LLC in collaboration with EMBSI. The project's primary focus is to aggregate, organize, and analyze public data related to phthalates, with a specific emphasis on developmental and reproductive toxicity.
