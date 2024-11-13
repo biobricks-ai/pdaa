@@ -9,12 +9,15 @@
 # dvc repro <stage>
 
 stages:
-  download_zinc:
-    cmd: bash stages/01_download_zinc.sh 
+  process_embsi_files:
+    cmd: python stages/01_process_embsi_files.py
     deps:
-      - stages/01_download_zinc.sh
+      - resources/embsi
+      - stages/01_process_embsi_files.py
     outs:
-      - download
+      - cache/process_embsi_files/dnt.parquet
+      - cache/process_embsi_files/reprotox.parquet
+
   build_zinc: 
     cmd: stages/02_build_zinc.sh
     deps:
