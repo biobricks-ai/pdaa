@@ -16,7 +16,36 @@ tmpdir = outdir / 'temp'
 tmpdir.mkdir(parents=True, exist_ok=True)
 
 # Load the data
-df = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')
+raw_df = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')[['smiles']]
+dehp = Chem.MolFromSmiles('CCCCC(CC)COC(=O)C1=CC=CC=C1C(=O)OCC(CC)CCCC')
+diup = Chem.MolFromSmiles('CC(C)CCCCCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCCCCCC(C)C')
+dtdp = Chem.MolFromSmiles('CCCCCCCCCCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCCCCCCCCCC')
+didp = Chem.MolFromSmiles('CC(C)CCCCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCCCCC(C)C')
+dinp = Chem.MolFromSmiles('CC(C)CCCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCCCC(C)C')
+example_phthalates = [dehp, diup, dtdp, didp, dinp]
+example_phthalates_smiles = [Chem.MolToSmiles(mol) for mol in example_phthalates]
+
+# add these to raw_df
+raw_df = pd.concat([raw_df, pd.DataFrame({'smiles': example_phthalates_smiles})])
+raw_df = raw_df.drop_duplicates(subset=['smiles'])
+
+phthalate_pattern = Chem.MolFromSmiles('COC(=O)C1=CC=CC=C1C(=O)OC')
+
+for mol in example_phthalates:
+    assert mol.HasSubstructMatch(phthalate_pattern)
+
+# Filter dataframe to only include molecules matching the phthalate pattern
+df = raw_df[raw_df['smiles'].progress_apply(lambda x: Chem.MolFromSmiles(x).HasSubstructMatch(phthalate_pattern))]
+df.shape
+
+# make sure all the example phthalates are in the dataframe
+assert all(mol in df['smiles'].tolist() for mol in example_phthalates_smiles)
+
+# save 10 random smiles as mol images
+# Sample 10 molecules and create a grid image
+mols = [Chem.MolFromSmiles(smi) for smi in df['smiles'].sample(10)]
+img = Draw.MolsToGridImage(mols, molsPerRow=5, subImgSize=(400,400), legends=[f"Molecule {i+1}" for i in range(10)])
+img.save(f'{outdir}/phthalate_grid.png')
 
 # Generate fingerprints
 generator = AllChem.GetMorganGenerator(radius=2, fpSize=2048)
@@ -36,7 +65,7 @@ fingerprints = df['fingerprint'].tolist()
 similarity_matrix = calculate_similarity(fingerprints)
 
 # get shape of matrix
-print(similarity_matrix.shape)
+similarity_matrix.shape
 
 # Perform clustering
 distance_matrix = 1 - similarity_matrix
@@ -44,7 +73,7 @@ clustering = AgglomerativeClustering(n_clusters=None, distance_threshold=0.5, me
 df['cluster'] = clustering.fit_predict(distance_matrix)
 
 # Convert fingerprints to lists of integers
-df['list_fingerprint'] = df['fingerprint'].apply(lambda x: list(x.ToBitString()))
+df['list_fingerprint'] = df['fingerprint'].progress_apply(lambda x: list(x.ToBitString()))
 savedf = df.drop(columns=['fingerprint'])
 savedf.to_parquet(tmpdir / 'phthalates_clustered.parquet')
 
@@ -58,14 +87,26 @@ plt.savefig(outdir / 'phthalates_clusters_heatmap.png')
 # Create a barchart of the cluster sizes
 df['cluster'].nunique()
 
-# take the 10 largest clusters and sample 5 from each
-cluster_sizes = df['cluster'].value_counts().sort_values(ascending=False)
-top_clusters = cluster_sizes.head(10)
-
 sampled_molecules = []
-for cluster in top_clusters.index:
-    cluster_df = df[df['cluster'] == cluster]
-    sampled_mols = cluster_df.sample(n=5, random_state=42)['smiles'].tolist()
+for smiles in example_phthalates_smiles:
+    # Get the fingerprint of the example phthalate
+    example_fp = generator.GetFingerprint(Chem.MolFromSmiles(smiles))
+    
+    # Calculate similarities to all other molecules
+    similarities = []
+    for idx, row in df.iterrows():
+        if row['smiles'] != smiles and row['smiles'] not in example_phthalates_smiles:
+            sim = DataStructs.TanimotoSimilarity(example_fp, row['fingerprint'])
+            similarities.append((row['smiles'], sim))
+    
+    # Sort by similarity and take top 4 most similar
+    similarities.sort(key=lambda x: x[1], reverse=True)
+    # make sure the similarity is less than .95
+    similarities = [x for x in similarities if x[1] < 0.95]
+    similar_smiles = [x[0] for x in similarities[:4]]
+    
+    # Add the example phthalate at the start
+    sampled_mols = [smiles] + similar_smiles
     sampled_molecules.append(sampled_mols)
 
 # Draw the sampled molecules in a grid
@@ -106,7 +147,7 @@ for i, mols in enumerate(sampled_molecules):
             axes[i, j].axis('off')
 
 # Overlay semi-transparent rectangles for row background colors
-background_colors = sns.color_palette("pastel", len(sampled_molecules))
+background_colors = sns.color_palette("husl", len(sampled_molecules))  # More vibrant and saturated colors
 for i, color in enumerate(background_colors):
     fig.patches.extend([
         plt.Rectangle(
