@@ -86,6 +86,13 @@ with ProcessPoolExecutor(max_workers=30) as executor:
 # Combine all results
 phthalates_files = list(temp_phthalates.glob('*.parquet'))
 final_df = pd.concat([pd.read_parquet(f) for f in phthalates_files])
+
+# generate inchi for all phthalates
+final_df['inchi'] = final_df['smiles'].progress_apply(lambda x: Chem.MolToInchi(Chem.MolFromSmiles(x)) if pd.notnull(x) else None)
+
+final_df.to_parquet(outdir / 'zinc_phthalates.parquet')
+
+final_df = pd.read_parquet(outdir / 'zinc_phthalates.parquet')
 final_df.to_parquet(outdir / 'zinc_phthalates.parquet')
 
 # Cleanup temporary files

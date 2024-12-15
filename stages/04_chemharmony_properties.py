@@ -5,7 +5,7 @@ from multiprocessing import Pool
 
 tqdm.pandas()
 
-outdir = pathlib.Path('cache/chemharmony_fields')
+outdir = pathlib.Path('cache/chemarmony_properties')
 outdir.mkdir(exist_ok=True)
 
 chemharmony = bb.assets('chemharmony')
@@ -16,3 +16,6 @@ phthalates['inchi'] = phthalates['smiles'].progress_apply(lambda x: Chem.MolToIn
 
 # join on inchi
 joined = phthalates.merge(chemharmony, on='inchi', how='inner')
+
+outfile = outdir / 'phthalates_chemharmony.parquet'
+joined.to_parquet(outfile)
