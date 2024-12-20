@@ -6,7 +6,7 @@ import stages.utils.simple_cache as simple_cache
 import pathlib
 dotenv.load_dotenv()
 
-cache_dir = pathlib.Path('cache/util/openai') 
+cache_dir = pathlib.Path('cache/util/openai') / 'cache'
 cache_dir.mkdir(parents=True, exist_ok=True)
 
 client = openai.OpenAI()

@@ -5,3 +5,6 @@ logs
 /raw
 /resources
 /dvc_pipeline.png
+.env
+faiss_index_cosine.index
+*.pyc

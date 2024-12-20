@@ -26,6 +26,21 @@ def get_chemprop_prediction(inchi: str, property_token: str) -> dict:
 def get_chemprop_prediction_safe(inchi: str, property_token: str, retries: int = 5, delay: int = 2) -> dict:
     return make_safe(get_chemprop_prediction)(inchi, property_token, retries, delay)
 
+def chemprop_predict_all(inchi: str) -> list[dict]:
+    base_url = "http://chemprop-transformer-alb-2126755060.us-east-1.elb.amazonaws.com/predict_all"
+    params = {"inchi": inchi}
+    response = requests.get(base_url, params=params)
+    response.raise_for_status()  # Raise exception for bad status codes
+    return response.json()
+
+async def chemprop_predict_all_async(inchi: str) -> dict:
+    base_url = "http://chemprop-transformer-alb-2126755060.us-east-1.elb.amazonaws.com/predict_all"
+    params = {"inchi": inchi}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(base_url, params=params) as response:
+            response.raise_for_status()  # Raise exception for bad status codes
+            return await response.json()
+                
 async def get_chemprop_prediction_async(inchi: str, property_token: str, retries: int = 5, delay: int = 2) -> dict:
     """
     Get prediction from ChemProp API for a given InChI and property token with retry logic.

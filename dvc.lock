@@ -5,8 +5,8 @@ stages:
     deps:
     - path: resources/embsi
       hash: md5
-      md5: 6610eb041d04c0a0a8cd0c8db389acff.dir
-      size: 111847
+      md5: 6b7a19eb3f5ceafb73adefe9a87fd62d.dir
+      size: 114436
       nfiles: 6
     - path: stages/01_process_embsi_files.py
       hash: md5
@@ -21,3 +21,38 @@ stages:
       hash: md5
       md5: 12fd4d3555b4e45584a29eac49b7ccc4
       size: 24104
+  make_dvc_pipeline:
+    cmd: dvc dag --dot | dot -Tpng -o dvc_pipeline.png
+    outs:
+    - path: dvc_pipeline.png
+      hash: md5
+      md5: 76b7aa35e164dd00551a9caad701546c
+      size: 27940
+  build_phthalates:
+    cmd: python stages/02_build_phthalates.py
+    deps:
+    - path: stages/02_build_phthalates.py
+      hash: md5
+      md5: 6c5b31fb160490add917f5ba52c0bb64
+      size: 3493
+    outs:
+    - path: cache/zinc_phthalates/zinc_phthalates.parquet
+      hash: md5
+      md5: 18eb9a28212c5a9eb91b7a8e4ce1552e
+      size: 4126956
+  chemharmony_properties:
+    cmd: python stages/03_chemharmony_properties.py
+    deps:
+    - path: cache/zinc_phthalates/zinc_phthalates.parquet
+      hash: md5
+      md5: 18eb9a28212c5a9eb91b7a8e4ce1552e
+      size: 4126956
+    - path: stages/03_chemharmony_properties.py
+      hash: md5
+      md5: 7ec70012f390b10b6c86601ddb2358dc
+      size: 709
+    outs:
+    - path: cache/chemarmony_properties/phthalates_chemharmony.parquet
+      hash: md5
+      md5: 326f0b448780edd1a5e740bcf4d5d2d2
+      size: 3466883

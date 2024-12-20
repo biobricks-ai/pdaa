@@ -2,8 +2,8 @@ import sys
 sys.path.append('./')
 import stages.utils.simple_cache as simple_cache
 import stages.utils.openai as openai_utils
+import stages.utils.pdaa as pdaa
 
-import pdaa
 import json
 import faiss
 import shutil
@@ -123,7 +123,7 @@ proptokens = ctprops[['uri','property_token']].drop_duplicates()
 
 # build text values
 propvars = ctprops[['uri','title','data']]
-propvars = pd.melt(ctprops, id_vars=['uri'], var_name='variable', value_name='value')
+propvars = pd.melt(ctprops, id_vars=['uri'], value_vars=['title','data'], var_name='variable', value_name='value')
 propvars = propvars.drop_duplicates()
 
 # endregion
@@ -131,9 +131,10 @@ propvars = propvars.drop_duplicates()
 # region ASSOCIATE PROPERTIES WITH AOPWIKI PATHWAYS ========================================================
 uri_aops = aops.rename(columns={'aop': 'uri', 'text': 'value'}) 
 uri_key_events = key_events.rename(columns={'key_event': 'uri', 'text': 'value'})
-embed_df = pd.concat([propvars, uri_aops, uri_key_events], ignore_index=True).drop_duplicates()
+
+embed_df = pd.concat([propvars, uri_aops, uri_key_events], ignore_index=True)
 embed_df = embed_df[['uri','variable','value']]
-embed_df = embed_df.dropna()
+embed_df = embed_df.dropna().drop_duplicates()
 
 truncate = lambda text: text[:10000] if len(text) > 10000 else text
 embed_df['embedding'] = embed_df['value'].apply(truncate).progress_apply(openai_utils.embed)
@@ -153,7 +154,7 @@ faiss.write_index(index, "faiss_index_cosine.index")
 # write a new ntriples that adds:
 # 1. ctprops and their property_token,source, title, and data
 # 2. similarity entities that link ctprops and key events
-from rdflib import Literal, URIRef, XSD, RDFS
+from rdflib import Literal, URIRef, XSD, RDFS, RDF
 
 EDAM = rdflib.Namespace('http://edamontology.org/')
 
@@ -162,11 +163,16 @@ simgraph.namespace_manager.bind('aop', rdflib.Namespace('http://aopkb.org/aop_on
 simgraph.namespace_manager.bind('dcterms', rdflib.Namespace('http://purl.org/dc/terms/'))
 simgraph.namespace_manager.bind('toxindex', rdflib.Namespace('http://toxindex.com/ontology/'))
 
+faissclass = URIRef('http://toxindex.com/ontology/faiss_index')
+tox_property_class = URIRef('http://toxindex.com/ontology/property')
+
 # link uris to toxindex property tokens
 for ind, uri, property_token in proptokens.itertuples():
+    uri = URIRef(uri)
     token_uri = pdaa.property_token_to_uri(property_token)
-    _ = simgraph.add((token_uri, EDAM.term('has_identifier'), URIRef(f"toxindex:property_token{property_token}")))
+    _ = simgraph.add((uri, EDAM.term('has_identifier'), token_uri))
     _ = simgraph.add((token_uri, RDFS.label, Literal(int(property_token), datatype=XSD.integer)))
+    _ = simgraph.add((token_uri, RDF.type, tox_property_class))
 
 print(f"there are {len(simgraph)} triples in the graph")
 
@@ -176,6 +182,7 @@ for i, uri in enumerate(embed_df['uri']):
     faiss_value = Literal(int(i),datatype=XSD.integer)
     _ = simgraph.add((URIRef(uri), EDAM.term('has_identifier'), faiss_token))
     _ = simgraph.add((faiss_token, RDFS.label, faiss_value))
+    _ = simgraph.add((faiss_token, RDF.type, faissclass))
 
 print(f"there are {len(simgraph)} triples in the graph")
 

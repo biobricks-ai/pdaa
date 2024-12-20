@@ -1,4 +1,3 @@
-import joblib as jl
 import json
 import time
 import asyncio
@@ -11,69 +10,67 @@ from tqdm import tqdm
 from tenacity import retry, stop_after_attempt, wait_exponential
 import biobricks as bb
 import sqlite3
-
 import sys
+import itertools as it
+import random
+import threading
+from tqdm.asyncio import tqdm_asyncio
+from typing import Iterator, Tuple
 sys.path.append('./')
 import stages.utils.chemprop as chemprop
+import stages.utils.pdaa as pdaa
 
 tqdm.pandas()
 
 # Setup paths and caches
-cachedir = pathlib.Path('cache/model_priority_phthalates')
-cachedir.mkdir(parents=True, exist_ok=True)
-
-savedir = cachedir / 'tmp' / 'batches'
-savedir.mkdir(parents=True, exist_ok=True)
+brickdir = pathlib.Path('brick')
 
 cptransformer = bb.assets('chemprop-transformer').cvae_sqlite
 cpsqlite = sqlite3.connect(cptransformer)
-property_tokens = pd.read_sql_query("SELECT property_token FROM property", cpsqlite)['property_token'].tolist()
+property_tokens = pd.read_sql_query("SELECT property_token FROM property", cpsqlite)['property_token'].unique().tolist()
 property_tokens = sorted(property_tokens)
 
 raw_df = pd.read_parquet('cache/priority_phthalates/priority_phthalates.parquet')
-top_df = raw_df.sort_values(by='max_similarity', ascending=False).head(100)
-inchi_list = top_df['inchi'].tolist()
+top_df = raw_df.sort_values(by='max_similarity', ascending=False)[['inchi', 'max_similarity']].drop_duplicates()
+inchi_list = top_df['inchi'].unique().tolist()
 
-async def get_prediction(inchi,tok,semaphore):
-    async with semaphore:
-        return await chemprop.get_chemprop_prediction_async(inchi=inchi, property_token=tok)
+# BATCH RUN ==============================================================
+def get_missing(inchi_list):
+    inchi_tok_pairs = [(inchi, tok) for inchi in inchi_list for tok in property_tokens]
+    missing_inchi = set()
+    with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
+        for inchi, property_token in inchi_tok_pairs:
+            if inchi in missing_inchi:
+                continue
+            cursor = conn.execute('SELECT * FROM predictions WHERE inchi = ? AND property_token = ?', (inchi, property_token))
+            exists = cursor.fetchone() is not None
+            if not exists:
+                missing_inchi.add(inchi)
+    return missing_inchi
 
-async def run_model(combination_generator, num_combinations=100, semaphore_size=3):
-    semaphore = asyncio.BoundedSemaphore(3)
-    tasks = (get_prediction(inchi,tok,semaphore) for inchi, tok in combination_generator)
-    results = []
-    async for i, result in tqdm_async(enumerate(asyncio.as_completed(tasks)), total=num_combinations, desc="Processing"):
-        results.append(await result)
+# BUILD PREDICTION FUNCTION =====================================================
+
+async def process_batches():
+    BATCH_SIZE = 16*100
+    batch_generator = it.batched(iter(inchi_list), BATCH_SIZE)
+    num_batches = len(inchi_list) // BATCH_SIZE
     
-    return results
+    num_errors = 0
+    sqlite_lock = threading.Lock()
+    semaphore = asyncio.Semaphore(16)
+    for batch in tqdm(batch_generator, total=num_batches, desc="Processing batches"):
+        inchi_batch : Iterator[str] = get_missing(batch)
+        print(f'{len(inchi_batch)} missing to predict')
 
-num_combinations = len(inchi_list) * len(property_tokens)
-total_batches = (num_combinations + 99999) // 100000
-print(f"Processing {num_combinations} combinations in {total_batches} batches")
+        predictions = [pdaa.async_predict_all(inchi, semaphore) for inchi in inchi_batch]
+        rawresults = await tqdm_asyncio.gather(*predictions, return_exceptions=True, desc="predicting...")
 
-combination_generator = islice(product(inchi_list, property_tokens), 0, 5)
-res = asyncio.run(run_model(combination_generator, 5))
-print(res)
+        errors = [res for res in rawresults if isinstance(res, Exception)]
+        num_errors += len(errors)
 
-start_time = time.time()
-for batch_idx, batch in enumerate(range(0, num_combinations, 100000)):
-    batch_size = min(100000, num_combinations - batch)
-    res = asyncio.run(run_model(islice(product(inchi_list, property_tokens), batch, batch + 100000), batch_size, semaphore_size=9))
-    
-    timestamp = int(time.time())
-    with open(savedir / f'model_phthalates_{timestamp}.json', 'w') as f:
-        json.dump(res, f)
-    eta = (time.time() - start_time) / (batch + batch_size) * (num_combinations - batch - batch_size) / 3600
-    print(f"Batch {batch//100000 + 1}/{total_batches}, ETA: {eta:.1f}h")
+        flatres = [item for sublist in rawresults for item in sublist if not isinstance(item, Exception)]
+        results = [(res['inchi'], res['property_token'], res['value']) for res in flatres]
+        pdaa.add_predictions(results, sqlite_lock)
+        print(f"added {len(results)} predictions")
 
-
-# Load previously processed results
-def load(batch_file):
-    with open(batch_file) as f:
-        return json.load(f)
-
-# count the number of errors
-bf = list(savedir.glob('model_phthalates_*.json'))
-res = [r['result'] for r in load(bf[0])]
-errors = [r for r in load(bf[0]) if r['error'] is not None]
-print(f"Number of errors: {len(errors)}")
+asyncio.run(process_batches())

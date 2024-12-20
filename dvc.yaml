@@ -1,14 +1,10 @@
-# Brick DVC stages
-# See https://dvc.org/doc/user-guide/project-structure/dvcyaml-files#pipelines-files-dvcyaml
-
-# The complete process can be executed using:
-# dvc repro
-# If you want to force redoing the process use 
-# dvc repro -f
-# Individual stage can be executed using: 
-# dvc repro <stage>
-
 stages:
+
+  make_dvc_pipeline:
+    cmd: dvc dag --dot | dot -Tpng -o dvc_pipeline.png
+    outs:
+      - dvc_pipeline.png
+
   process_embsi_files:
     cmd: python stages/01_process_embsi_files.py
     deps:
@@ -18,24 +14,43 @@ stages:
       - cache/process_embsi_files/dnt.parquet
       - cache/process_embsi_files/reprotox.parquet
 
-  build_zinc: 
-    cmd: stages/02_build_zinc.sh
+  build_phthalates:
+    cmd: python stages/02_build_phthalates.py
     deps:
-      - stages/02_build_zinc.sh
-      - download
+      - stages/02_build_phthalates.py
     outs:
-      - raw/zinc.parquet
-  filter_zinc_phthalates: 
-    cmd: python stages/03_filter_phtalates.py
+      - cache/zinc_phthalates/zinc_phthalates.parquet
+
+  chemharmony_properties:
+    cmd: python stages/03_chemharmony_properties.py
     deps:
-      - stages/03_filter_phtalates.py
-      - raw/zinc.parquet
+      - stages/03_chemharmony_properties.py
+      - cache/zinc_phthalates/zinc_phthalates.parquet
     outs:
-      - raw/zinc_phthalates
-  harmonize_zinc_phthalates: 
-    cmd: python stages/04_add_chemharmony_fields.py
+    - cache/chemarmony_properties/phthalates_chemharmony.parquet
+
+  pubtator_properties:
+    cmd: python stages/04_pubtator.py
     deps:
-      - stages/04_add_chemharmony_fields.py
-      - raw/zinc_phthalates
+      - stages/04_pubtator.py
+      - cache/zinc_phthalates/zinc_phthalates.parquet
     outs:
-      - raw/harmonized_phthalates
+      - cache/pubtator/phthalates_pubtator.parquet
+
+  visualize_phthalates:
+    cmd: python stages/05_visualize_phthalates.py
+    deps:
+      - stages/05_visualize_phthalates.py
+      - cache/zinc_phthalates/zinc_phthalates.parquet
+    outs:
+      - cache/visualize_phthalates/phthalates_clusters_heatmap.png
+      - cache/visualize_phthalates/sampled_molecules_grid.png
+  
+  model_phthalates:
+    cmd: python stages/08_model_phthalates.py
+    deps:
+      - stages/08_model_phthalates.py
+      - cache/zinc_phthalates/zinc_phthalates.parquet
+    outs:
+      - cache/model_phthalates/batches/:
+          persist: true
