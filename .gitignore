@@ -8,3 +8,6 @@ logs
 .env
 faiss_index_cosine.index
 *.pyc
+
+blazegraph.jar
+blazegraph.jnl

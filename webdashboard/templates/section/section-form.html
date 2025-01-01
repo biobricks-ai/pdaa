@@ -1,0 +1,28 @@
+<div class="full-width">
+    <form 
+        hx-get="/section/chemical" 
+        hx-swap="outerHTML" 
+        hx-target="this" 
+        id="add-section-form">
+        <div class="form-group">
+            <label for="section-type">Section Type</label>
+            <select id="section-type" name="type" onchange="updateHxPost()">
+                <option value="chemical">chemical</option>
+                <option value="adverse-outcomes">adverse-outcomes</option>
+                <option value="section-form">section-form</option>
+            </select>
+        </div>
+        <button type="submit">Create Section</button>
+    </form>
+</div>
+
+<script>
+    function updateHxPost() {
+        
+        const sectionType = document.getElementById("section-type").value;
+        const form = document.getElementById("add-section-form");
+
+        form.setAttribute("hx-get", `/section/${sectionType}`);
+        htmx.process(form);
+    }
+</script>

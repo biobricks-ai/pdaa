@@ -1,0 +1,21 @@
+<div id="adverse-outcomes-edit-{{ section_id }}">
+    <form 
+        hx-get="/section/adverse-outcomes-result" 
+        hx-target="#adverse-outcomes-result-{{ section_id }}" 
+        hx-swap="innerHTML">
+        <input 
+            type="text" 
+            id="chemical-name-{{ section_id }}" 
+            name="chemical_name" 
+            placeholder="Enter chemical name"
+            required>
+        <input 
+            type="text" 
+            id="prompt-{{ section_id }}" 
+            name="prompt" 
+            placeholder="Enter prompt"
+            required>
+        <button type="submit">Calculate</button>
+    </form>
+</div>
+<div id="adverse-outcomes-result-{{ section_id }}"></div>
