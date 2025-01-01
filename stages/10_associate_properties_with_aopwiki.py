@@ -1,94 +1,65 @@
-import sys
-sys.path.append('./')
-import stages.utils.simple_cache as simple_cache
+# TODO update this to use blazegraph
 import stages.utils.openai as openai_utils
 import stages.utils.pdaa as pdaa
+import stages.utils.sparql as sparql
+from stages.utils.sqlite_rdf import SQLiteGraph
 
 import json
 import faiss
 import shutil
+import sqlite3
 import rdflib
-import dotenv
-import openai
 import pathlib
 import functools
 import biobricks
 import subprocess
 import numpy as np
 import pandas as pd
-import itertools as it
 
 from tqdm import tqdm
 
 cachedir = pathlib.Path('cache/associate_properties_with_aopwiki')
 cachedir.mkdir(parents=True, exist_ok=True)
 
-pd.set_option('display.max_rows', 10)
-pd.set_option('display.max_columns', 80)
-pd.set_option('display.width', None)
-pd.set_option('display.max_colwidth', 80)
-
 tqdm.pandas()
 
 # outs: [aop_titles, aop_descriptions, aop_abstracts, key_events, membership, graph]
-# region GET AOPWIKI KEY EVENTS AND ADVERSE OUTCOME PATHWAYS ==========================================
-
 ## BUILD AOPWIKI RDF ========================================================
-sr = functools.partial(subprocess.run, shell=True)
-sr("git clone https://github.com/rdfhdt/hdt-cpp.git")
-sr('docker build -t hdt hdt-cpp/.')
+if not (cachedir / 'aopwiki.sqlite').exists():
+    sr = functools.partial(subprocess.run, shell=True)
+    sr("git clone https://github.com/rdfhdt/hdt-cpp.git")
+    sr('docker build -t hdt hdt-cpp/.')
 
-# start the container
-hdtworkdir = pathlib.Path('./hdtworkdir')
-hdtworkdir.exists() and shutil.rmtree(hdtworkdir)
-hdtworkdir.mkdir(parents=True, exist_ok=True)
+    # start the container
+    hdtworkdir = pathlib.Path('./hdtworkdir')
+    hdtworkdir.exists() and shutil.rmtree(hdtworkdir)
+    hdtworkdir.mkdir(parents=True, exist_ok=True)
 
-sr(f'docker rm -f hdt || true')
-sr(f'docker run -d --name hdt -v $(pwd)/hdtworkdir:/workdir hdt tail -f /dev/null')
+    sr(f'docker rm -f hdt || true')
+    sr(f'docker run -d --name hdt -v $(pwd)/hdtworkdir:/workdir hdt tail -f /dev/null')
 
-# ADD AOPWikiRDF-Genes.hdt AOPWikiRDF.hdt TO DOCKER CONTAINER
-aopwiki = biobricks.Brick.Resolve('aopwikirdf-kg').path() / 'brick'
-for hdt_file in aopwiki.glob('*.hdt'):
-    sr(f'docker cp {hdt_file.resolve()} hdt:/workdir/{hdt_file.name}')
+    # ADD AOPWikiRDF-Genes.hdt AOPWikiRDF.hdt TO DOCKER CONTAINER
+    aopwiki = biobricks.Brick.Resolve('aopwikirdf-kg').path() / 'brick'
+    for hdt_file in aopwiki.glob('*.hdt'):
+        sr(f'docker cp {hdt_file.resolve()} hdt:/workdir/{hdt_file.name}')
+
+    hdtcmd = lambda cmd: sr(f'docker exec -it hdt /bin/bash -c "{cmd}"')
+    hdtcmd(f"hdt2rdf /workdir/AOPWikiRDF.hdt /workdir/out.nt")
 
 ## QUERY AOPWIKI RDF ========================================================
-hdtcmd = lambda cmd: sr(f'docker exec -it hdt /bin/bash -c "{cmd}"')
-hdtcmd(f"hdt2rdf /workdir/AOPWikiRDF.hdt /workdir/out.nt")
-
 graph = rdflib.Graph()
 graph.namespace_manager.bind('aop', rdflib.Namespace('http://aopkb.org/aop_ontology#'))
 graph.namespace_manager.bind('dcterms', rdflib.Namespace('http://purl.org/dc/terms/'))
 graph.parse('./hdtworkdir/out.nt', format='nt')
-def gquery(q):
-    res = pd.DataFrame(graph.query(q).bindings).map(str)
-    res.columns = [str(c) for c in res.columns]
-    return res
 
-# get KeyEvent labels and descriptions
-key_events = gquery("""
-SELECT ?key_event ?variable ?text WHERE {
-    ?key_event a aop:KeyEvent .
-    ?key_event ?variable ?text .
-    FILTER (?variable = dc:title || ?variable = rdfs:label || ?variable = dc:description)
-}
-""")
-key_events['variable'].value_counts()
+aopwiki_uri_text = sparql.Query(graph) \
+    .select('key_event', 'variable', 'text') \
+    .where('?key_event a ?type') \
+    .where('FILTER(?type = aop:KeyEvent || ?type = aop:AdverseOutcomePathway)') \
+    .where('?key_event ?variable ?text') \
+    .where('FILTER (?variable = dc:title || ?variable = rdfs:label || ?variable = dc:description)') \
+    .execute()
 
-aops = gquery("""
-SELECT ?aop ?variable ?text WHERE {
-    ?aop a aop:AdverseOutcomePathway .
-    ?aop ?variable ?text .
-    FILTER (?variable = dc:title || ?variable = dc:description || ?variable = dcterms:abstract)
-}
-""")
-
-membership = gquery("""
-SELECT ?key_event ?aop WHERE {
-    ?key_event dcterms:isPartOf ?aop .
-    ?key_event a aop:KeyEvent .
-    ?aop a aop:AdverseOutcomePathway .
-} limit 5
-""")
 # endregion
 
 # TODO: we need better URIs for bindingdb
@@ -96,30 +67,37 @@ SELECT ?key_event ?aop WHERE {
 #   - propvars - property_token, title, data, source
 #   - proptokens - uri, property_token
 # region GET CHEMPROP-TRANSFORMER PROPERTIES ========================================================
-import sqlite3
 with sqlite3.connect(biobricks.assets('chemprop-transformer').cvae_sqlite) as con:
     rawprops = pd.read_sql_query("SELECT property_token, title, data, s.source FROM property p INNER JOIN source s ON p.source_id = s.source_id", con)
     rawprops['property_token'] = rawprops['property_token'].astype(int)
     rawprops['data'] = rawprops['data'].map(lambda x: json.loads(x))
+    property_categories = pd.read_sql_query("SELECT p.property_id, p.property_token, c.category_id, c.category FROM property_category inner join category c on property_category.category_id = c.category_id inner join property p on property_category.property_id = p.property_id", con)
+    property_categories['category_id'] = property_categories['category_id'].astype(int)
 
-rawprops['source'].value_counts()
+# ice example uri https://ice.ntp.niehs.nih.gov/api/v1/curves?assay=BSK_LPS_TNFa_down
+ctice = rawprops[rawprops['source'] == 'ice'].reset_index()
+ctice['uri'] = ctice['data'].progress_apply(lambda x: f"https://ice.ntp.niehs.nih.gov/api/v1/curves?assay={x['Assay'].replace(' ', '_')}")
 
+# binding db
 ctbindingdb = rawprops[rawprops['source'] == 'bindingdb'].reset_index()
 ctbindingdb['uri'] = ctbindingdb['data'].progress_apply(lambda x: x['Link to Target in BindingDB'])
 
+# pubchem
 ctpubchem = rawprops[rawprops['source'] == 'pubchem'].reset_index()
 mkaid = lambda aid: f"https://identifiers.org/pubchem.bioassay:{aid}"
 ctpubchem['uri'] = ctpubchem['data'].progress_apply(lambda x: mkaid(int(x['aid'])))
 
+# TODO need better uris for chembl maybe something like https://www.ebi.ac.uk/chembl/explore/target/CHEMBL688612
 ctchembl = rawprops[rawprops['source'] == 'chembl'].reset_index()
 mkassayid = lambda aid: f"https://identifiers.org/chembl.target:{aid}"
-ctchembl['uri'] = ctchembl['data'].progress_apply(lambda x: mkassayid(x['assay_id']))
+ctchembl['uri'] = ctchembl['data'].progress_apply(lambda x: mkassayid(x['chembl_id']))
 
-ctprops = pd.concat([ctbindingdb, ctpubchem, ctchembl], ignore_index=True)
+ctprops = pd.concat([ctbindingdb, ctpubchem, ctchembl, ctice], ignore_index=True)
 ctprops['data'] = ctprops['data'].map(lambda x: json.dumps(x))
 
 # associate uris with property_token
-proptokens = ctprops[['uri','property_token']].drop_duplicates()
+proptokens = ctprops[['uri','title','property_token','data']].drop_duplicates()
+proptokens.to_csv(cachedir / 'proptokens.csv', index=False)
 
 # build text values
 propvars = ctprops[['uri','title','data']]
@@ -129,15 +107,13 @@ propvars = propvars.drop_duplicates()
 # endregion
 
 # region ASSOCIATE PROPERTIES WITH AOPWIKI PATHWAYS ========================================================
-uri_aops = aops.rename(columns={'aop': 'uri', 'text': 'value'}) 
-uri_key_events = key_events.rename(columns={'key_event': 'uri', 'text': 'value'})
-
-embed_df = pd.concat([propvars, uri_aops, uri_key_events], ignore_index=True)
+embed_df = pd.concat([propvars, aopwiki_uri_text], ignore_index=True)
 embed_df = embed_df[['uri','variable','value']]
 embed_df = embed_df.dropna().drop_duplicates()
 
 truncate = lambda text: text[:10000] if len(text) > 10000 else text
 embed_df['embedding'] = embed_df['value'].apply(truncate).progress_apply(openai_utils.embed)
+embed_df.to_csv(cachedir / 'embed_df.csv', index=False)
 
 # Normalize embeddings for cosine similarity
 embeddings = np.vstack(embed_df['embedding'].values)
@@ -146,7 +122,7 @@ embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
 # Create and save FAISS index
 index = faiss.IndexFlatIP(embeddings.shape[1])
 index.add(embeddings)
-faiss.write_index(index, "faiss_index_cosine.index")
+faiss.write_index(index, (cachedir / 'faiss_index_cosine.index').as_posix())
 
 # endregion
 
@@ -154,39 +130,78 @@ faiss.write_index(index, "faiss_index_cosine.index")
 # write a new ntriples that adds:
 # 1. ctprops and their property_token,source, title, and data
 # 2. similarity entities that link ctprops and key events
+import pandas as pd
 from rdflib import Literal, URIRef, XSD, RDFS, RDF
+proptokens = pd.read_csv(cachedir / 'proptokens.csv')
+embed_df = pd.read_csv(cachedir / 'embed_df.csv')
 
-EDAM = rdflib.Namespace('http://edamontology.org/')
+DCTERMS = rdflib.Namespace('http://purl.org/dc/elements/1.1/')
 
 simgraph = rdflib.Graph()
-simgraph.namespace_manager.bind('aop', rdflib.Namespace('http://aopkb.org/aop_ontology#'))
-simgraph.namespace_manager.bind('dcterms', rdflib.Namespace('http://purl.org/dc/terms/'))
-simgraph.namespace_manager.bind('toxindex', rdflib.Namespace('http://toxindex.com/ontology/'))
-
-faissclass = URIRef('http://toxindex.com/ontology/faiss_index')
-tox_property_class = URIRef('http://toxindex.com/ontology/property')
-
-# link uris to toxindex property tokens
-for ind, uri, property_token in proptokens.itertuples():
-    uri = URIRef(uri)
-    token_uri = pdaa.property_token_to_uri(property_token)
-    _ = simgraph.add((uri, EDAM.term('has_identifier'), token_uri))
-    _ = simgraph.add((token_uri, RDFS.label, Literal(int(property_token), datatype=XSD.integer)))
-    _ = simgraph.add((token_uri, RDF.type, tox_property_class))
-
+simgraph.parse('./hdtworkdir/out.nt', format='nt')
 print(f"there are {len(simgraph)} triples in the graph")
 
+## CREATE PROPERTY_TOKEN ENTITIES FROM CHEMPROP-TRANSFORMER with
+## --- RDF.type: toxindex:predicted_property
+## --- has_identifier:  <the external uri>
+## --- purl:title: from the gpt4 generated title
+## --- rdfs:label: the numeric property_token
+for ind, uri, title, property_token, data in tqdm(list(proptokens.itertuples())):
+    uri = URIRef(uri)
+    token_uri = pdaa.property_token_to_uri(property_token)
+    _ = simgraph.add((token_uri, RDF.type, pdaa.predicted_property_class))
+    _ = simgraph.add((token_uri, DCTERMS.term('has_identifier'), uri))
+    _ = simgraph.add((token_uri, DCTERMS.term('title'), Literal(title)))
+    _ = simgraph.add((token_uri, DCTERMS.term('description'), Literal(data)))
+    _ = simgraph.add((token_uri, RDF.value, Literal(int(property_token), datatype=XSD.integer)))
+
+# create 
+# link property_token to category
+for ind, property_token, category in tqdm(list(property_categories[['property_token','category']].drop_duplicates().itertuples())):
+    token_uri = pdaa.property_token_to_uri(property_token)
+    _ = simgraph.add((token_uri, DCTERMS.term('subject'), Literal(category)))
+
 # link uris to faiss index
-for i, uri in enumerate(embed_df['uri']):
+for i, uri in tqdm(list(enumerate(embed_df['uri']))):
     faiss_token = pdaa.faiss_index_to_uri(i)
     faiss_value = Literal(int(i),datatype=XSD.integer)
-    _ = simgraph.add((URIRef(uri), EDAM.term('has_identifier'), faiss_token))
-    _ = simgraph.add((faiss_token, RDFS.label, faiss_value))
-    _ = simgraph.add((faiss_token, RDF.type, faissclass))
+    _ = simgraph.add((faiss_token, DCTERMS.term('has_identifier'), URIRef(uri)))
+    _ = simgraph.add((faiss_token, RDF.value, faiss_value))
+    _ = simgraph.add((faiss_token, RDF.type, pdaa.faissclass))
 
 print(f"there are {len(simgraph)} triples in the graph")
 
 # Commit the changes to the graph
 simgraph.commit()
 simgraph.serialize(destination=cachedir / 'simgraph.nt', format='nt')
+simgraph.close()
+
+# add to blazegraph
+# delete the pdaa namespace if it exists
+import requests
+
+# delete the namespace if it exists
+response = requests.delete(f'http://localhost:9999/blazegraph/namespace/pdaa')
+
+# create the pdaa namespace
+namespace_url = 'http://localhost:9999/blazegraph/namespace'
+headers = {'Content-Type': 'application/xml'}
+namespace_properties = '''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE properties SYSTEM "http://java.sun.com/dtd/properties.dtd">
+<properties>
+    <entry key="com.bigdata.rdf.store.AbstractTripleStore.textIndex">true</entry>
+    <entry key="com.bigdata.rdf.store.AbstractTripleStore.axiomsClass">com.bigdata.rdf.axioms.NoAxioms</entry>
+    <entry key="com.bigdata.rdf.sail.isolatableIndices">false</entry>
+    <entry key="com.bigdata.rdf.sail.truthMaintenance">false</entry>
+    <entry key="com.bigdata.rdf.store.AbstractTripleStore.justify">false</entry>
+    <entry key="com.bigdata.rdf.sail.namespace">pdaa</entry>
+</properties>'''
+response = requests.post(namespace_url, headers=headers, data=namespace_properties)
+response.raise_for_status()
+
+# upload the simgraph.nt to blazegraph
+with open(cachedir / 'simgraph.nt', 'rb') as f:
+    headers = {'Content-Type': 'application/x-turtle'}
+    response = requests.post(f"{namespace_url}/pdaa/sparql", headers=headers, data=f)
+response.raise_for_status()
 # endregion

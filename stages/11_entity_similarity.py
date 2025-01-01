@@ -1,5 +1,4 @@
 import os
-import itertools as it
 import numpy as np
 import requests
 import sys
@@ -16,142 +15,88 @@ import pandas as pd
 import faiss
 from rdflib import URIRef
 
-cachedir = pathlib.Path('cache') / 'create_chemical_report'
+cachedir = pathlib.Path('cache') / 'entity_similarity'
 cachedir.mkdir(parents=True, exist_ok=True)
 
-chemical = 'dehp'
-chemical_inchi = pubchem.lookup_chemical_inchi(chemical)
-prompt = "reproductive toxicity"
-
-# region build resources ===============================================================
+# region faiss cosine matrix ===============================================================
 # lookup all faissindex uris and get their embeddings
+# get faiss indexes of uris
 uri_faissindex = sparql.Query(pdaa.pdaa_graph) \
-    .select_typed({'uri': str, 'index': int}) \
-    .where('?faissindex <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
-    .where('?faissindex a toxindex:faiss_index') \
-    .where('?faissindex rdf:value ?index') \
+    .select('uri', 'faissindex', 'index') \
+    .where('?uri <http://edamontology.org/has_identifier> ?faissindex') \
+    .where('?faissindex a <http://toxindex.com/ontology/faiss_index>') \
+    .where('?faissindex <http://www.w3.org/2000/01/rdf-schema#label> ?index') \
     .execute()
-uri_faissindex['embedding'] = uri_faissindex['index'].map(lambda i: pdaa.faiss_index.reconstruct(i))
+
+# get aops [ uri, faissindex]
+aops = pdaa.aopwiki_query("SELECT ?uri WHERE { ?uri a aop:AdverseOutcomePathway . }")
+aop_faissindex = aops.merge(uri_faissindex, on='uri', how='inner')
+aop_faissindex['index'] = aop_faissindex['index'].astype(int)
+aop_faissindex['embedding'] = [pdaa.faiss_index.reconstruct(int(i)) for i in aop_faissindex['index'].values]
+
+# list all the types in the aopwiki
+aopwiki_types = pdaa.aopwiki_query("SELECT ?type WHERE { ?uri a ?type . }")
+aopwiki_types = aopwiki_types.drop_duplicates()
+aopwiki_types.to_csv(cachedir / 'aopwiki_types.csv', index=False)
+
+aop_mie = pdaa.aopwiki_query("SELECT ?uri WHERE { ?sub aop:has_molecular_initiating_event ?uri . }")
+aop_mie = aop_mie.drop_duplicates()
+aop_mie_faissindex = aop_mie.merge(uri_faissindex, on='uri', how='inner')[['uri','index']]
+aop_mie_faissindex['embedding'] = [pdaa.faiss_index.reconstruct(int(i)) for i in aop_mie_faissindex['index'].values]
+
+key_events = pdaa.aopwiki_query("SELECT ?uri WHERE { ?uri a aop:KeyEvent . }")
+key_events_predicates = pdaa.aopwiki_query("""
+    SELECT ?uri ?predicate WHERE { 
+        ?uri ?predicate <https://identifiers.org/aop.events/1617> . 
+    }""")
 
 # find the has_adverse_outcome ao that is in the same pathway as a given has_molecular_initiating_event mie
-aop_mie_ao = sparql.Query(pdaa.aop_graph) \
-    .select('aop', 'mie', 'ao') \
-    .where('?aop aop:has_adverse_outcome ?ao') \
-    .where('?aop aop:has_molecular_initiating_event ?mie') \
-    .execute()
+aop_mie_ao = pdaa.aopwiki_query("""
+    SELECT ?aop ?mie ?ao WHERE { 
+        ?aop aop:has_adverse_outcome ?ao . 
+        ?aop aop:has_molecular_initiating_event ?mie . 
+    }""")[['aop','mie','ao']]
 
 # find uris that has_identifier ?x where ?x is a toxindex:property_token
-proptoken_uris = sparql.Query(pdaa.pdaa_graph) \
-    .select_typed({'uri': str, 'proptoken': str, 'token': str}) \
-    .where('?proptoken <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
-    .where('?proptoken a <http://toxindex.com/ontology/predicted_property>') \
-    .where('?proptoken rdf:value ?token') \
-    .execute()
+proptoken_uris = pdaa.pdaa_query("""
+    SELECT ?uri ?proptoken ?token WHERE { 
+        ?uri EDAM:has_identifier ?proptoken . 
+        ?proptoken a <http://toxindex.com/ontology/property> . 
+        ?proptoken rdfs:label ?token .
+    }""")
+proptoken_faissindex = proptoken_uris.merge(uri_faissindex, on='uri', how='inner')[['uri','proptoken','index','token']]
 
-def get_prompt_similars(prompt, target_uris, top_k_to_search=1000):
-    """Find most similar target URIs to a text prompt using FAISS embeddings.
-    
-    Args:
-        prompt (str): Text prompt to compare against
-        target_uris (list): List of URIs to search within
-        top_k_to_search (int): Number of nearest neighbors to search before filtering to target URIs
-        
-    Returns:
-        DataFrame with columns ['uri', 'similarity'] containing matches
-    """
-    # Get embeddings and search FAISS index
-    prompt_embedding = np.array(openai_utils.embed(prompt))[np.newaxis, :]
-    distances, indices = pdaa.faiss_index.search(prompt_embedding, top_k_to_search)
-    
-    # Filter to target URIs and format results
-    target_indices = set(uri_faissindex[uri_faissindex['uri'].isin(target_uris)]['index'])
-    matches = [(d, i) for d, i in zip(distances[0], indices[0]) if i in target_indices]
-    
-    if not matches:
-        return pd.DataFrame(columns=['uri', 'similarity'])
-        
-    results = pd.DataFrame(matches, columns=['similarity', 'index'])
-    return (results.merge(uri_faissindex, on='index')
-            .groupby('uri')['similarity']
-            .max()
-            .reset_index()[['uri', 'similarity']])
+proptoken_embeddings = np.vstack([pdaa.faiss_index.reconstruct(int(i)) for i in proptoken_faissindex['index'].values])
+proptoken_faiss = faiss.IndexFlatIP(proptoken_embeddings.shape[1])
+proptoken_faiss.add(proptoken_embeddings)
 
-def get_uri_similars(source_uris, target_uris):
-    """Find most similar target URIs to source URIs using FAISS embeddings.
-    
-    Args:
-        source_uris (list): List of source URIs to compare from
-        target_uris (list): List of target URIs to search within
-        top_k_to_search (int): Number of nearest neighbors to search before filtering
-        
-    Returns:
-        DataFrame with columns ['source_uri', 'target_uri', 'similarity'] containing matches
-    """
-    # Get source embeddings from uri_faissindex
-    source_faissindex = uri_faissindex[uri_faissindex['uri'].isin(source_uris)].reset_index()
-    source_embeddings = np.vstack(source_faissindex['embedding'])
-    
-    # Get target embeddings and create temporary FAISS index
-    target_faissindex = uri_faissindex[uri_faissindex['uri'].isin(target_uris)].reset_index()
-    target_embeddings = np.vstack(target_faissindex['embedding'])
-    target_faiss = faiss.IndexFlatIP(target_embeddings.shape[1])
-    target_faiss.add(target_embeddings)
-    
-    # Search for nearest neighbors
-    distances, indices = target_faiss.search(source_embeddings, target_embeddings.shape[0])
-    
-    # Convert to dataframe and expand pairs
-    results = pd.DataFrame({
-        'source_uri': np.repeat(source_faissindex['uri'].values, indices.shape[1]),
-        'target_uri': target_faissindex.iloc[indices.ravel()]['uri'].values,
-        'similarity': distances.ravel()
-    })
-    return results.groupby(['source_uri','target_uri'])['similarity'].max().reset_index()
+# Get similarities between property tokens and aop_ao_faissindex
+D, I = proptoken_faiss.search(np.vstack(aop_mie_faissindex['embedding'].values), k=len(proptoken_faissindex))
+D, I = D.tolist(), I.tolist()
 
-def predict_predicted_property_uris(chemical_inchi, predicted_property_identifiers):
-    tmp_proptoken = proptoken_uris[proptoken_uris['uri'].isin(predicted_property_identifiers)][['uri','token']]
-    tmp_proptoken['int_token'] = tmp_proptoken['token'].astype(int)
+# Create similarity matrix with property tokens and AOPs
+simtable = []
+for i in aop_mie_faissindex.index:
+    aop_mie_uri = aop_mie_faissindex.iloc[i]['uri']
+    for dist, prop_idx in zip(D[i], I[i]):
+        if dist >= 0.4:  # Only keep similarities >= 40%
+            prop_uri = proptoken_faissindex.iloc[prop_idx]['uri']
+            prop_token = int(proptoken_faissindex.iloc[prop_idx]['token'])
+            simtable.append({
+                'mie': aop_mie_uri,
+                'property_uri': prop_uri,
+                'property_token': prop_token,
+                'similarity': dist
+            })
 
-    inchi_tok_pairs = set([(chemical_inchi, int(t)) for t in tmp_proptoken['int_token'].tolist()])
-    predictions = pdaa.get_predictions_with_sqlite_cache(inchi_tok_pairs)
-    prediction_df = pd.DataFrame(predictions, columns=['inchi', 'int_token', 'prediction'])
-
-    result = prediction_df.merge(tmp_proptoken, on='int_token', how='inner')
-    return result[['uri','prediction']]
-
-adverse_outcomes = set(aop_mie_ao['ao'].tolist())
-
-# get relevant adverse outcomes and their MIEs
-prompt_adverse_outcomes = get_prompt_similars(prompt, adverse_outcomes, top_k_to_search=2000).query('similarity > 0.4')
-prompt_ao_mie = aop_mie_ao[aop_mie_ao['ao'].isin(prompt_adverse_outcomes['uri'])][['ao','mie']].drop_duplicates()
-
-# get relevant predicted properties for given MIEs
-predicted_property_identifiers = proptoken_uris['uri'].unique()
-relevant_mie = prompt_ao_mie['mie'].unique()
-mie_proptoken_id_simtable = get_uri_similars(relevant_mie, predicted_property_identifiers).query('similarity > 0.4')
-mie_proptoken_id_simtable.columns = ['mie','property_token_id','similarity']
-
-# get the chemical predicted properties
-relevant_property_tokens = mie_proptoken_id_simtable['property_token_id'].unique()
-predictions_df = predict_predicted_property_uris(chemical_inchi, relevant_property_tokens)[['uri','prediction']]
-predictions_df = predictions_df.query('prediction > 0.8')[['uri','prediction']]
-predictions_df.columns = ['property_token_id','prediction']
-
-# generate property_token_id weight for each mie
-mie_proptoken_weight = mie_proptoken_id_simtable.merge(predictions_df, on='property_token_id', how='inner')
-mie_proptoken_weight['weight'] = mie_proptoken_weight['similarity'] * mie_proptoken_weight['prediction']
-mie_proptoken_weight.columns = ['mie', 'property_token_id', 'similarity', 'prediction', 'weight']
-
-# get adverse outcome weights
-ao_mie_weight = prompt_ao_mie.merge(mie_proptoken_weight, on='mie', how='inner')
-ao_mie_weight = ao_mie_weight.groupby('ao')['weight'].sum().reset_index().sort_values('weight', ascending=False)
+aop_mie_simtable = pd.DataFrame(simtable)
+aop_mie_simtable = aop_mie_simtable.groupby(['mie','property_token'])['similarity'].max().reset_index()
+aop_mie_simtable.to_csv(cachedir / 'aop_mie_simtable.csv', index=False)
 
 # uri titles
-title_pred = "<http://purl.org/dc/elements/1.1/title>"
-uri_titles = pdaa.pdaa_query(f"SELECT ?uri ?title WHERE {{ ?uri {title_pred} ?title . }}")
-
-results = ao_mie_weight.merge(uri_titles, left_on='ao', right_on='uri', how='inner')
-ao_results = results[['ao','title','weight']]
+aop_titles = pdaa.aopwiki_query("SELECT ?uri ?title WHERE { ?uri purl:title ?title . }")
+prop_titles = pdaa.pdaa_query("SELECT ?uri ?title WHERE { ?uri purl:title ?title . }")
+uri_titles = prop_titles.merge(aop_titles, on='uri', how='inner')
 
 # endregion
 
