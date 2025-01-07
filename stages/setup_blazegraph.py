@@ -40,11 +40,7 @@ namespace_properties = '''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 </properties>'''
 
 response = requests.post(f'{namespace_url}', headers=headers, data=namespace_properties)
-if response.status_code == 201:
-    print("Successfully created namespace 'pdaa'")
-else:
-    print(f"Error creating namespace: {response.status_code}")
-    print(response.text)
+
 
 upload_triples_to_blazegraph(
     'cache/associate_properties_with_aopwiki/simgraph.nt',

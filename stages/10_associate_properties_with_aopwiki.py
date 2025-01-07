@@ -1,8 +1,9 @@
-# TODO update this to use blazegraph
+import sys
+sys.path.append('./')
+
 import stages.utils.openai as openai_utils
-import stages.utils.pdaa as pdaa
 import stages.utils.sparql as sparql
-from stages.utils.sqlite_rdf import SQLiteGraph
+import stages.utils.toxindex as toxindex
 
 import json
 import faiss
@@ -25,7 +26,7 @@ tqdm.pandas()
 
 # outs: [aop_titles, aop_descriptions, aop_abstracts, key_events, membership, graph]
 ## BUILD AOPWIKI RDF ========================================================
-if not (cachedir / 'aopwiki.sqlite').exists():
+if not pathlib.Path('./hdtworkdir/out.nt').exists():
     sr = functools.partial(subprocess.run, shell=True)
     sr("git clone https://github.com/rdfhdt/hdt-cpp.git")
     sr('docker build -t hdt hdt-cpp/.')
@@ -53,10 +54,10 @@ graph.namespace_manager.bind('dcterms', rdflib.Namespace('http://purl.org/dc/ter
 graph.parse('./hdtworkdir/out.nt', format='nt')
 
 aopwiki_uri_text = sparql.Query(graph) \
-    .select('key_event', 'variable', 'text') \
-    .where('?key_event a ?type') \
+    .select('uri', 'variable', 'value') \
+    .where('?uri a ?type') \
     .where('FILTER(?type = aop:KeyEvent || ?type = aop:AdverseOutcomePathway)') \
-    .where('?key_event ?variable ?text') \
+    .where('?uri ?variable ?value') \
     .where('FILTER (?variable = dc:title || ?variable = rdfs:label || ?variable = dc:description)') \
     .execute()
 
@@ -111,13 +112,16 @@ embed_df = pd.concat([propvars, aopwiki_uri_text], ignore_index=True)
 embed_df = embed_df[['uri','variable','value']]
 embed_df = embed_df.dropna().drop_duplicates()
 
+# there shouldn't be any duplicates
+assert embed_df.shape[0] == propvars.shape[0] + aopwiki_uri_text.shape[0]
+
 truncate = lambda text: text[:10000] if len(text) > 10000 else text
 embed_df['embedding'] = embed_df['value'].apply(truncate).progress_apply(openai_utils.embed)
+embed_df['embedding'] = embed_df['embedding'].map(lambda x: x / np.linalg.norm(x))
 embed_df.to_csv(cachedir / 'embed_df.csv', index=False)
 
 # Normalize embeddings for cosine similarity
 embeddings = np.vstack(embed_df['embedding'].values)
-embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
 
 # Create and save FAISS index
 index = faiss.IndexFlatIP(embeddings.shape[1])
@@ -135,6 +139,8 @@ from rdflib import Literal, URIRef, XSD, RDFS, RDF
 proptokens = pd.read_csv(cachedir / 'proptokens.csv')
 embed_df = pd.read_csv(cachedir / 'embed_df.csv')
 
+proptokens[proptokens['uri'] == testuri]
+embed_df[embed_df['uri'] == testuri]
 DCTERMS = rdflib.Namespace('http://purl.org/dc/elements/1.1/')
 
 simgraph = rdflib.Graph()
@@ -146,28 +152,29 @@ print(f"there are {len(simgraph)} triples in the graph")
 ## --- has_identifier:  <the external uri>
 ## --- purl:title: from the gpt4 generated title
 ## --- rdfs:label: the numeric property_token
-for ind, uri, title, property_token, data in tqdm(list(proptokens.itertuples())):
-    uri = URIRef(uri)
-    token_uri = pdaa.property_token_to_uri(property_token)
-    _ = simgraph.add((token_uri, RDF.type, pdaa.predicted_property_class))
-    _ = simgraph.add((token_uri, DCTERMS.term('has_identifier'), uri))
-    _ = simgraph.add((token_uri, DCTERMS.term('title'), Literal(title)))
-    _ = simgraph.add((token_uri, DCTERMS.term('description'), Literal(data)))
-    _ = simgraph.add((token_uri, RDF.value, Literal(int(property_token), datatype=XSD.integer)))
+added_tuple_set = set()
+def add_tuple(tuple):
+    if tuple in added_tuple_set:
+        return
+    added_tuple_set.add(tuple)
+    simgraph.add(tuple)
 
-# create 
-# link property_token to category
-for ind, property_token, category in tqdm(list(property_categories[['property_token','category']].drop_duplicates().itertuples())):
-    token_uri = pdaa.property_token_to_uri(property_token)
-    _ = simgraph.add((token_uri, DCTERMS.term('subject'), Literal(category)))
+for ind, rawuri, title, property_token, data in tqdm(list(proptokens.itertuples())):
+    uri = URIRef(rawuri)
+    token_uri = toxindex.property_token_to_uri(property_token)
+    add_tuple((token_uri, RDF.type, toxindex.predicted_property_class))
+    add_tuple((token_uri, DCTERMS.term('has_identifier'), uri))
+    add_tuple((token_uri, DCTERMS.term('title'), Literal(title)))
+    add_tuple((token_uri, DCTERMS.term('description'), Literal(data)))
+    add_tuple((token_uri, RDF.value, Literal(int(property_token), datatype=XSD.integer)))
 
 # link uris to faiss index
 for i, uri in tqdm(list(enumerate(embed_df['uri']))):
-    faiss_token = pdaa.faiss_index_to_uri(i)
+    faiss_token = toxindex.faiss_index_to_uri(i)
     faiss_value = Literal(int(i),datatype=XSD.integer)
-    _ = simgraph.add((faiss_token, DCTERMS.term('has_identifier'), URIRef(uri)))
-    _ = simgraph.add((faiss_token, RDF.value, faiss_value))
-    _ = simgraph.add((faiss_token, RDF.type, pdaa.faissclass))
+    add_tuple((faiss_token, DCTERMS.term('has_identifier'), URIRef(uri)))
+    add_tuple((faiss_token, RDF.value, faiss_value))
+    add_tuple((faiss_token, RDF.type, toxindex.faissclass))
 
 print(f"there are {len(simgraph)} triples in the graph")
 

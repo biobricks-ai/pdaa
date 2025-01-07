@@ -61,3 +61,50 @@ class PubchemTools:
             self.cache[hash_key] = inchi
             return inchi
     
+    def get_similar_inchi(self, chemical_name, n_similar=10):
+        """Get similar compounds from PubChem using the REST API.
+        
+        Args:
+            chemical_name (str): Name of chemical to find similar compounds for
+            n_similar (int): Number of similar compounds to return (default 10)
+            
+        Returns:
+            list[str]: List of similar compound names
+        """
+        # First get the CID for the input chemical
+        search_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{chemical_name}/cids/JSON"
+        response = requests.get(search_url)
+        response.raise_for_status()
+        
+        if response.status_code == 404:
+            return []
+            
+        cid = response.json()['IdentifierList']['CID'][0]
+        
+        # Get similar compounds using the similarity search
+        similar_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/fastsimilarity_2d/cid/{cid}/cids/JSON"
+        response = requests.get(similar_url)
+        response.raise_for_status()
+        
+        if response.status_code == 404:
+            return []
+            
+        similar_cids = response.json()['IdentifierList']['CID'][:n_similar]
+        
+        # Get names for the similar compounds
+        names = []
+        for similar_cid in similar_cids:
+            # Add delay to avoid rate limiting
+            time.sleep(0.33)
+            
+            name_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{similar_cid}/synonyms/JSON"
+            response = requests.get(name_url)
+            
+            if response.status_code != 404:
+                response.raise_for_status()
+                synonyms = response.json()['InformationList']['Information'][0]['Synonym']
+                # Use first synonym as name
+                names.append(synonyms[0])
+                
+        return names
+    

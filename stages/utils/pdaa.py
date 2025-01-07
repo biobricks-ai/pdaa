@@ -1,6 +1,5 @@
 import asyncio
 import faiss
-import json
 import numpy as np
 import pandas as pd
 import pathlib
@@ -13,7 +12,6 @@ from tqdm import tqdm
 
 import stages.utils.chemprop as chemprop
 import stages.utils.openai as openai_utils
-import stages.utils.pubchem as pubchem
 import stages.utils.sparql as sparql
 
 brickdir = pathlib.Path('brick')
@@ -58,6 +56,8 @@ proptoken_uris = sparql.Query(pdaa_graph, pdaa_graph_cache) \
     .where('?proptoken <http://purl.org/dc/elements/1.1/title> ?title') \
     .cache_execute() \
     .groupby('uri').first().reset_index()
+
+proptoken_uris[proptoken_uris['uri'].str.contains('ice.ntp')]
 
 def lookup_predictions(inchi_tok_pairs):
     with sqlite_lock:
@@ -152,7 +152,7 @@ def get_all_property_predictions(inchi):
     return predictions
 
 # SIMILARITY UTILITIES ===============================================================
-def get_prompt_similars(prompt, target_uris, top_k_to_search=1000):
+def get_prompt_similars(prompt, target_uris, top_k_to_search=20000):
     """Find most similar target URIs to a text prompt using FAISS embeddings.
     
     Args:
@@ -164,8 +164,9 @@ def get_prompt_similars(prompt, target_uris, top_k_to_search=1000):
         DataFrame with columns ['uri', 'similarity'] containing matches
     """
     # Get embeddings and search FAISS index
-    prompt_embedding = np.array(openai_utils.embed(prompt))[np.newaxis, :]
-    distances, indices = faiss_index.search(prompt_embedding, top_k_to_search)
+    prompt_embedding = np.array(openai_utils.embed(prompt))[np.newaxis, :] 
+    prompt_embedding = prompt_embedding / np.linalg.norm(prompt_embedding)
+    distances, indices = faiss_index.search(prompt_embedding, min(top_k_to_search, uri_faissindex.shape[0]))
     
     # Filter to target URIs and format results
     target_indices = set(uri_faissindex[uri_faissindex['uri'].isin(target_uris)]['index'])
@@ -175,10 +176,10 @@ def get_prompt_similars(prompt, target_uris, top_k_to_search=1000):
         return pd.DataFrame(columns=['uri', 'similarity'])
         
     results = pd.DataFrame(matches, columns=['similarity', 'index'])
-    return (results.merge(uri_faissindex, on='index')
-            .groupby('uri')['similarity']
-            .max()
-            .reset_index()[['uri', 'similarity']])
+    res = results.merge(uri_faissindex, on='index').groupby('uri')['similarity'].max().reset_index()
+    res = res[['uri', 'similarity']].sort_values('similarity', ascending=False)
+
+    return res
 
 def get_uri_similars(source_uris, target_uris):
     """Find most similar target URIs to source URIs using FAISS embeddings.

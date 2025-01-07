@@ -4,6 +4,9 @@ import requests
 from rdflib import Graph, Namespace
 from typing import List, Dict, Any
 import pathlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Query:
     
@@ -47,10 +50,15 @@ class Query:
     
     def build_query(self) -> str:
         """Build the complete SPARQL query string"""
-        select_clause = "SELECT " + " ".join(f"?{var}" for var in self.select_vars)
-        where_clause = "WHERE { " + " . ".join(self.where_clauses) + " }"
+        select_vars = " ".join(f"?{var}" for var in self.select_vars)
+        select_clause = f"SELECT {select_vars}"
+        
+        where_patterns = " .\n  ".join(self.where_clauses)
+        where_clause = f"WHERE {{\n  {where_patterns}\n}}"
+        
         if hasattr(self, 'limit_clause'):
-            where_clause += f" {self.limit_clause}"
+            where_clause += f"\n{self.limit_clause}"
+            
         return f"{select_clause}\n{where_clause}"
     
     def cache_execute(self, force_refresh:bool=False) -> pd.DataFrame:
@@ -80,12 +88,26 @@ class Query:
     def execute(self) -> pd.DataFrame:
         """Execute the query and return results as a pandas DataFrame with proper types"""
         query_str = self.build_query()
-        results = self.graph.query(query_str)
+
+        try:
+            results = self.graph.query(query_str)
+        except Exception as e:
+            logger.error(f"Error executing query\n: {query_str}")
+            raise e
         
         # Convert results to DataFrame
         df = pd.DataFrame(results.bindings).map(str)
         df.columns = [str(c) for c in df.columns]
-        df = df[self.select_vars]
+        
+        # Check if any selected variables are missing from results
+        missing_vars = set(self.select_vars) - set(df.columns)
+        if missing_vars:
+            logger.warning(f"Missing variables in results: {missing_vars}")
+            # Only select variables that are present
+            present_vars = [v for v in self.select_vars if v in df.columns]
+            df = df[present_vars]
+        else:
+            df = df[self.select_vars]
         
         # Apply type casting if types were specified
         if hasattr(self, 'column_types'):
