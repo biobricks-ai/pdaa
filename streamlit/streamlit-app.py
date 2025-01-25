@@ -187,7 +187,7 @@ def build_barchart(predictions, title):
     
     return fig
 
-# shutil.rmtree(cachedir / "get_all_predictions")
+
 @simple_cache.simple_cache_df(cachedir / "get_all_predictions")
 def get_all_predictions(chemical_list):
 
@@ -212,16 +212,20 @@ def get_all_predictions(chemical_list):
     preds_df.rename(columns={'uri':'property_token_id_uri'}, inplace=True)
     preds_df["chemical_name"] = preds_df["inchi"].map(inchi2name)
     
-    all_pred_df = preds_df.merge(mie_proptoken_id_simtable, on='property_token_id_uri')
-    all_pred_df['weight'] = all_pred_df['similarity'] * all_pred_df['prediction']
-    return all_pred_df[['mie','property_token_id_uri','chemical_name','similarity','prediction','weight']]
+    return preds_df
 
 @simple_cache.simple_cache_df(cachedir / "get_property_predictions")
 def get_property_predictions(predictions, prompt, top_n=20):
     # get relevant property predictions
-    prompt_property = pdaa.get_prompt_similars(prompt, pdaa.proptoken_uris['uri'].unique(), top_k_to_search=10000)
-    prompt_property = prompt_property.query('similarity > 0.2').sort_values('similarity', ascending=False).head(top_n)
-    
+    # make it so that if the prompt has quotes it only considers uris that have the exact match (ignoring case)
+    uri_candidates = pdaa.proptoken_uris
+    if '"' in prompt:
+        quoted_words = prompt.split('"')[1::2]
+        uri_candidates = uri_candidates[uri_candidates['title'].str.lower().apply(lambda x: any(word.lower() in x for word in quoted_words))]
+
+    prompt_property = pdaa.get_prompt_similars(prompt, uri_candidates['uri'].unique(), top_k_to_search=20000)
+    prompt_property = prompt_property.sort_values('similarity', ascending=False).head(top_n)
+
     res = predictions[['property_token_id_uri','chemical_name','prediction']].drop_duplicates()
     res = res[res['property_token_id_uri'].isin(prompt_property['uri'])]
     res = res.merge(uri_titles, left_on='property_token_id_uri', right_on='uri')
@@ -237,29 +241,38 @@ def get_property_predictions(predictions, prompt, top_n=20):
 @simple_cache.simple_cache_df(cachedir / "get_mie_predictions")
 def get_mie_predictions(predictions, prompt, top_n=20):
 
+    all_pred_df = predictions.merge(mie_proptoken_id_simtable, on='property_token_id_uri')
+    all_pred_df['weight'] = all_pred_df['similarity'] * all_pred_df['prediction']
+    all_pred_df = all_pred_df[['mie','property_token_id_uri','chemical_name','similarity','prediction','weight']]
+
+    candidate_ao = all_ao
+    if '"' in prompt:
+        quoted_words = prompt.split('"')[1::2]
+        candidate_ao = candidate_ao[candidate_ao['mie_title'].str.lower().apply(lambda x: any(word.lower() in x for word in quoted_words))]
+
     # get relevant aop, mie that lead to these should be included    
-    prompt_aop = pdaa.get_prompt_similars(prompt, all_ao['aop'].unique(), top_k_to_search=10000)
+    prompt_aop = pdaa.get_prompt_similars(prompt, candidate_ao['aop'].unique(), top_k_to_search=10000)
     prompt_aop = prompt_aop.query('similarity > 0.2')
     prompt_aop = all_ao.merge(prompt_aop, left_on='aop', right_on='uri')[['mie','mie_title','similarity']]
     
     # get relevant adverse outcomes, mie that lead to these should be included    
-    prompt_ao = pdaa.get_prompt_similars(prompt, all_ao['ao'].unique(), top_k_to_search=10000)
+    prompt_ao = pdaa.get_prompt_similars(prompt, candidate_ao['ao'].unique(), top_k_to_search=10000)
     prompt_ao = prompt_ao.query('similarity > 0.2')
     prompt_ao = all_ao.merge(prompt_ao, left_on='ao', right_on='uri')[['mie','mie_title','similarity']]
 
     # get relevant mie predictions
-    prompt_mie = pdaa.get_prompt_similars(prompt, all_ao['mie'].unique(), top_k_to_search=10000)
+    prompt_mie = pdaa.get_prompt_similars(prompt, candidate_ao['mie'].unique(), top_k_to_search=10000)
     prompt_mie = prompt_mie.query('similarity > 0.2')
     prompt_mie = all_ao.merge(prompt_mie, left_on='mie', right_on='uri')[['mie','mie_title','similarity']]
     prompt_mie = prompt_mie.merge(prompt_ao, on='mie').merge(prompt_aop, on='mie')
     prompt_mie = prompt_mie.groupby(['mie','mie_title']).agg({'similarity':'max'}).reset_index()
 
     # get the top n mie in the predictions df
-    pred_mie = predictions['mie'].unique()
+    pred_mie = all_pred_df['mie'].unique()
     prompt_mie = prompt_mie[prompt_mie['mie'].isin(pred_mie)].sort_values('similarity', ascending=False).head(top_n)
     prompt_mie = prompt_mie[['mie','mie_title']]
 
-    mie_predictions = predictions[['mie','property_token_id_uri','chemical_name','prediction']].merge(prompt_mie, on=['mie'])
+    mie_predictions = all_pred_df[['mie','property_token_id_uri','chemical_name','prediction']].merge(prompt_mie, on=['mie'])
     mie_predictions = mie_predictions[['mie','mie_title','property_token_id_uri','chemical_name','prediction']]
 
     # finally get the mean prediction across all linked property_token_id_uri
