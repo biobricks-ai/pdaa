@@ -1,5 +1,6 @@
 logs
 /download
+/cache
 /list
 /brick
 /raw
@@ -11,3 +12,4 @@ faiss_index_cosine.index
 
 blazegraph.jar
 blazegraph.jnl
+

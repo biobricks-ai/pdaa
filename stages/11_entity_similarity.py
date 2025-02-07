@@ -39,17 +39,23 @@ diup = rdkit.Chem.MolFromSmiles('CC(C)CCCCCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCCCCCC(C
 dtdp = rdkit.Chem.MolFromSmiles('CCCCCCCCCCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCCCCCCCCCC')
 didp = rdkit.Chem.MolFromSmiles('CC(C)CCCCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCCCCC(C)C')
 dinp = rdkit.Chem.MolFromSmiles('CC(C)CCCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCCCC(C)C')
-dpp = rdkit.Chem.MolFromSmiles('C1=CC=C(C=C1)OC(=O)C2=CC=CC=C2C(=O)OC3=CC=CC=C3') # diphenyl phthalate
-bbp = rdkit.Chem.MolFromSmiles('CCCCOC(=O)c1ccccc1C(=O)OCc2ccccc2') # Benzyl butyl phthalate
+
+# dpp = rdkit.Chem.MolFromSmiles('C1=CC=C(C=C1)OC(=O)C2=CC=CC=C2C(=O)OC3=CC=CC=C3') # diphenyl phthalate
+# bbp = rdkit.Chem.MolFromSmiles('CCCCOC(=O)c1ccccc1C(=O)OCc2ccccc2') # Benzyl butyl phthalate
 dbp = rdkit.Chem.MolFromInchi('InChI=1S/C16H22O4/c1-3-5-11-19-15(17)13-9-7-8-10-14(13)16(18)20-12-6-4-2/h7-10H,3-6,11-12H2,1-2H3')
 
 example_phthalates = [dehp, diup, dtdp, didp, dinp, dbp]
 example_names = ['DEHP', 'DIUP', 'DTDP', 'DIDP', 'DINP', 'DBP']
 example_inchi = [Chem.MolToInchi(m) for m in example_phthalates]
+example_weights = [rdkit.Chem.rdMolDescriptors.CalcExactMolWt(m) for m in example_phthalates]
 example_inchi2name = {inchi: name for inchi, name in zip(example_inchi, example_names)}
 
+# print the alias weights
+for name, weight in zip(example_names, example_weights):
+    print(f"{name}: {weight:.2f}")
+
 # run the model on the example phthalates
-pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
+_ = pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
 
 # which phthalate has the lowest mean ICE activity?
 # region ICE ACTIVITY ===============================================================
@@ -170,11 +176,32 @@ def cluster_rows_and_make_heatmap():
     ax1.set_xticks([])
     ax1.set_yticks([])
 
+    # Map to reordered positions
+    reordered_indices = {inchi: i for i, inchi in enumerate(reordered_matrix.index)}
+    
+    
+    for i, inchi in enumerate(example_inchi2name):
+        if inchi in reordered_indices:
+            name = example_inchi2name[inchi]
+            pos = reordered_indices[inchi]
+            cluster = row_clusters[cluster_order[pos]]  # Get cluster for this ordered position
+            color = cluster_colors[cluster]  # Get color for this cluster
+            lbl = f'← {name}' if name == 'DEHP' else f'←'
+            ax1.text(reordered_matrix.shape[1], pos, 
+                    lbl, ha='left', va='center', 
+                    fontsize=26, color=color)
+
     ax1.set_title('Clustered Heatmap of Selected Diester Phthalate Activity Across ICE Assays',
             fontsize=28, pad=20)
 
     # Create horizontal bar chart with cluster colors
     ax2.barh(range(len(mean_activity)), mean_activity, color=row_colors)
+    # Add annotations for example phthalates on the bar chart
+    for i, (idx, row) in enumerate(reordered_matrix.iterrows()):
+        if idx in example_inchi2name:
+            name = example_inchi2name[idx]
+            ax2.text(mean_activity[i], i, f' {name}', va='center', fontsize=10)
+            
     ax2.set_ylim(ax1.get_ylim())
     ax2.set_xlabel('Mean Activity', fontsize=24)
     ax2.set_yticks([])
@@ -197,15 +224,15 @@ def cluster_rows_and_make_heatmap():
     cluster_color_map = {i: color for i, color in enumerate(cluster_colors)}
 
     # Add both cluster number and color to the dataframe
-    clustered_phthalate_df = phthalate_df.merge(
-        pd.DataFrame({
-            'inchi': reordered_matrix.index, 
-            'cluster': row_clusters,
-            'cluster_color': [cluster_color_map[c] for c in row_clusters]
-        }), 
-        on='inchi'
-    )
+    inchi_clusters = []
+    for inchi in reordered_matrix.index:
+        cluster = row_clusters[cluster_order[reordered_indices[inchi]]]
+        inchi_clusters.append((inchi, cluster, cluster_color_map[cluster]))
 
+    inchi_cluster_df = pd.DataFrame(inchi_clusters, columns=['inchi', 'cluster', 'cluster_color'])
+    clustered_phthalate_df = phthalate_df.merge(inchi_cluster_df, on='inchi')
+
+    clustered_phthalate_df = phthalate_df.merge(inchi_cluster_df, on='inchi')
     # add either 'None' or name of example in the 'example' column
     clustered_phthalate_df['example'] = clustered_phthalate_df['inchi'].progress_apply(lambda x: example_inchi2name.get(x, 'None'))
     return clustered_phthalate_df
@@ -272,11 +299,9 @@ def plot_phthalate_activity_relationships():
     for metric, (corr, label, axis_label, bin_col) in sorted_metrics:
         print(f"{label}\t{corr:.3f}")
 
-
-
-
-    cluster_colors = df6['cluster_color'].unique().tolist()
+    cluster_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Blue, Red, Green
     plotdf = df6.copy()
+    plotdf.query('example != "None"')[['cluster','cluster_color']]
 
     # Create individual high-resolution plots for each metric
     for idx, (metric, (corr, label, axis_label, bin_col)) in enumerate(sorted_metrics):
@@ -288,8 +313,9 @@ def plot_phthalate_activity_relationships():
                     hue='cluster', palette=cluster_colors, alpha=0.7, ax=ax, s=150)  # Increased point size
         
         # Plot example phthalates
-        sns.scatterplot(x=metric, y='positive_prediction', data=plotdf[plotdf['example'] != 'None'],
-                    hue='cluster', palette=cluster_colors, alpha=1.0, ax=ax,
+        example_df = plotdf[plotdf['example'] != 'None']
+        sns.scatterplot(x=metric, y='positive_prediction', data=example_df,
+                    color=example_df['cluster_color'], alpha=1.0, ax=ax,
                     marker='s', s=300, legend=False)  # Increased marker size
         
         # Add text annotations for example phthalates
@@ -310,7 +336,7 @@ def plot_phthalate_activity_relationships():
         ax.grid(True, linestyle='--', alpha=0.7, linewidth=1.5)
         
         # Update legend with larger font
-        legend = ax.legend(title='Cluster', labels=[f'Cluster {i+1}' for i in range(n_clusters)])
+        legend = ax.legend(title='Cluster', labels=[f'Cluster {i+1}' for i in range(3)])
         legend.get_title().set_fontsize(18)
         for t in legend.get_texts():
             t.set_fontsize(16)
