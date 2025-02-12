@@ -75,7 +75,8 @@ def parse_chemical_list(chemical_list) -> dict[str, str]:
         chemicals[alias.strip()] = name.strip()
     return chemicals
 
-def build_heatmap(predictions, midvalue=0.5, max_val=None):   
+def build_heatmap(predictions, midvalue=0.5, max_val=None):
+       
     # Pivot the predictions into a matrix
     pdf = predictions.pivot(index='title', columns='chemical_name', values='prediction')
 
@@ -214,6 +215,7 @@ def get_all_predictions(chemical_list):
     
     all_pred_df = preds_df.merge(mie_proptoken_id_simtable, on='property_token_id_uri')
     all_pred_df['weight'] = all_pred_df['similarity'] * all_pred_df['prediction']
+
     return all_pred_df[['mie','property_token_id_uri','chemical_name','similarity','prediction','weight']]
 
 @simple_cache.simple_cache_df(cachedir / "get_property_predictions")
@@ -310,26 +312,103 @@ for i, example in enumerate(examples):
         st.session_state.prompt = example['prompt']
         st.session_state.chemical_list = example['chemicals']
         
+
+# Style "generate heatmap" button to be in the center, with background color"
+st.markdown(
+    """
+    <style>
+    [data-testid="stButton"] button {
+        display: block;
+        justify: center;
+        margin-left: auto;
+        margin-right: auto;
+        align-items: center;
+        width: 100%;
+
+        # background-color: #f0f2f6 !important;
+        # border-color: #ff0000 !important;      
+    }
+        
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 if st.button("Generate Heatmaps", disabled=st.session_state.updating_charts):
+    
     st.session_state.updating_charts = True
-    try:
-        predictions = get_all_predictions(chemical_list)
-        st.subheader("Property Heatmap")
-        property_predictions = get_property_predictions(predictions, prompt)
-        fig = build_heatmap(property_predictions)
-        st.plotly_chart(fig, use_container_width=True)
+    
+    # Style tab headings to be larger
+    st.markdown(
+        """
+        <style>
+        /* Set a grey background for the tab container */
+        [data-baseweb="tab-list"] {
+            background-color: #f0f2f6 !important;
+            border-radius: 10px;
+            padding: 8px;
+        }
+        
+        /* Set a grey background for individual tabs */
+        [data-baseweb="tab"] {
+            background-color: #f0f2f6 !important;
+            border-radius: 10px;
+            margin: 10px;
+        }
+        
+        /* Increase the font size for tab headers */
+        [data-baseweb="tab"] p {
+            font-size: 15pt !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        st.subheader("MIE Heatmap") 
-        mie_predictions = get_mie_predictions(predictions, prompt)
-        print(f'there are {len(mie_predictions)} mie predictions')
-        fig = build_heatmap(mie_predictions)
-        st.plotly_chart(fig, use_container_width=True)
+    # Create tabs
+    tab1, tab2, tab3 = st.tabs(["Property Heatmap", "MIE Heatmap", "Aggregate Predictions"])
 
-        st.subheader("Aggregate Predictions")
-        aggregate_predictions = mie_predictions.groupby(['chemical_name'])['prediction'].sum().reset_index()
-        fig = build_barchart(aggregate_predictions, title="Aggregate MIE Predictions")
-        st.plotly_chart(fig, use_container_width=True)
-    except Exception as e:
-        st.error("Unable to generate heatmaps. Please check that your prompt and chemicals are valid.")
-        st.error(e)
+    # Tab 1 : Property Heatmap
+    with tab1: 
+        try:
+            predictions = get_all_predictions(chemical_list)
+            property_predictions = get_property_predictions(predictions, prompt)
+
+            # Build plot
+            st.subheader("Property Heatmap")
+            fig_property = build_heatmap(property_predictions)
+            st.plotly_chart(fig_property, use_container_width=True)
+
+        except Exception as e:
+            st.error("Unable to generate heatmaps. Please check that your prompt and chemicals are valid.")
+            st.error(e)
+
+    # Tab 2 : MIE Heatmap
+    with tab2: 
+        try: 
+            mie_predictions = get_mie_predictions(predictions, prompt)
+            st.subheader("MIE Heatmap") 
+            # print(f'there are {len(mie_predictions)} mie predictions')
+            # st.write(f'There are {len(mie_predictions)} mie predictions')
+
+            fig_mie = build_heatmap(mie_predictions)
+            st.plotly_chart(fig_mie, use_container_width=True)
+        
+        except Exception as e:
+            st.error("Unable to generate heatmaps. Please check that your prompt and chemicals are valid.")
+            st.error(e)
+
+    # Tab 3 : Aggregate Predictions
+    with tab3:
+        try:
+            st.subheader("Aggregate Predictions")
+            aggregate_predictions = mie_predictions.groupby(['chemical_name'])['prediction'].sum().reset_index()
+            fig_aggregate = build_barchart(
+                aggregate_predictions, title="Aggregate MIE Predictions")
+            st.plotly_chart(fig_aggregate, use_container_width=True)
+
+        except Exception as e:
+            st.error("Unable to generate heatmaps. Please check that your prompt and chemicals are valid.")
+            st.error(e)
+    
     st.session_state.updating_charts = False
