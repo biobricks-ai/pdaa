@@ -1,0 +1,21 @@
+# Starting streamlit
+ Commands are in `start.sh`
+ Don't forget to activate conda environment
+
+
+# DEBUGGING FAISS
+- involves looking at python version (3.11 worked for me)
+- involves looking at streamlit location, faiss location, python location, etc.
+
+- got it working by uninstalling streamlit globally, then reinstalling 
+- in the activated conda environment
+
+- which python
+- which streamlit
+- which faiss-cpu
+- pip show fais-cpu
+- pip install faiss-cpu
+
+- Faiss compatibility with python 3.10 (might not support 3.12)
+- conda create -n pdaa python=3.11
+- conda activate pdaa
