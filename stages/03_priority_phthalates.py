@@ -3,6 +3,7 @@
 # outs = [ cache/priority_phthalates/priority_phthalates.parquet ]
 import rdkit, rdkit.Chem, rdkit.Chem.AllChem, rdkit.DataStructs, rdkit.Chem.rdFingerprintGenerator
 import boltons.funcutils, pandas as pd, pathlib
+from functools import lru_cache
 from tqdm import tqdm
 tqdm.pandas()
 
@@ -24,7 +25,8 @@ example_fps = [morgan.GetFingerprint(mol) for mol in example_phthalates]
 
 phthalates = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')
 
-@boltons.funcutils.lru_cache(default=0)
+# @boltons.funcutils.lru_cache(default=0)
+@lru_cache(maxsize=128)
 def get_max_similarity(mol_smiles):
 
     mol = rdkit.Chem.MolFromSmiles(mol_smiles)
