@@ -35,7 +35,9 @@ for mol in example_phthalates:
     assert mol.HasSubstructMatch(phthalate_pattern)
 
 # Filter dataframe to only include molecules matching the phthalate pattern
-df = raw_df[raw_df['smiles'].progress_apply(lambda x: Chem.MolFromSmiles(x).HasSubstructMatch(phthalate_pattern))]
+df = raw_df[raw_df['smiles'].progress_apply(
+    lambda x: Chem.MolFromSmiles(x).HasSubstructMatch(phthalate_pattern)
+)].copy()
 df.shape
 
 # make sure all the example phthalates are in the dataframe
