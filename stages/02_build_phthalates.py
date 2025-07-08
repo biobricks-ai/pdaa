@@ -21,9 +21,11 @@ spark = (SparkSession.builder
          .config("spark.executor.memory", "32g")  # More memory for executors
          .config("spark.sql.shuffle.partitions", "1000")  # Matching target file count
          .config("spark.driver.maxResultSize", "32g")  # Increased max result size
+         .config("spark.driver.bindAddress", "127.0.0.1")       # ← force bind to localhost
+         .config("spark.driver.host",        "127.0.0.1")       # ← ensure driver advertises the same
          .getOrCreate())
 
-# Path to the ZINC dataset and temp output directory
+# Path to the ZINC dataset and temp output directory1
 zinc_path = pathlib.Path(bb.assets('zinc').zinc_parquet)
 tempdir = outdir / 'temp'
 tempdir.mkdir(exist_ok=True)
@@ -88,11 +90,10 @@ phthalates_files = list(temp_phthalates.glob('*.parquet'))
 final_df = pd.concat([pd.read_parquet(f) for f in phthalates_files])
 
 # generate inchi for all phthalates
+from tqdm.notebook import tqdm
+tqdm.pandas()
 final_df['inchi'] = final_df['smiles'].progress_apply(lambda x: Chem.MolToInchi(Chem.MolFromSmiles(x)) if pd.notnull(x) else None)
 
-final_df.to_parquet(outdir / 'zinc_phthalates.parquet')
-
-final_df = pd.read_parquet(outdir / 'zinc_phthalates.parquet')
 final_df.to_parquet(outdir / 'zinc_phthalates.parquet')
 
 # Cleanup temporary files

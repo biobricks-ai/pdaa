@@ -26,8 +26,8 @@ stages:
     outs:
     - path: dvc_pipeline.png
       hash: md5
-      md5: 76b7aa35e164dd00551a9caad701546c
-      size: 27940
+      md5: d0bb087ba6fb3b5ae7400f0ef6d9bd3a
+      size: 38990
   build_phthalates:
     cmd: python stages/02_build_phthalates.py
     deps:
