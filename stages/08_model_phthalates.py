@@ -14,14 +14,17 @@ import random
 from tqdm.asyncio import tqdm as tqdm_async, tqdm_asyncio
 from tqdm import tqdm
 
-async def async_predict(inchi, tok, semaphore):
-    async with semaphore:
-        result = await chemprop.get_chemprop_prediction_async(
+async def async_predict(inchi: str, tok: str, sem: asyncio.Semaphore):
+    async with sem:
+        resp = await chemprop.get_chemprop_prediction_async(
             inchi=inchi, property_token=tok
         )
-        if result['error'] is not None:
-            raise Exception(f"Error: {result['error']}")
-        return inchi, tok, result['result']           # return all three values
+        if resp['error']:
+            raise RuntimeError(resp['error'])
+
+        # chemprop returns {'value': float, ...}
+        score = float(resp['result']['value'])
+        return inchi, tok, score          # <- scalar, not dict
         
 def add_predictions(predictions, lock):
     with lock:
@@ -32,10 +35,11 @@ def add_predictions(predictions, lock):
                 'VALUES (?, ?, ?)',
                 predictions
             )
-            
+
 # SETUP PATHS AND CACHES ========================================================
 brickdir = pathlib.Path('brick')
 brickdir.mkdir(parents=True, exist_ok=True)
+DB_PATH  = brickdir / "predictions.sqlite"
 cachedir = pathlib.Path('cache/model_phthalates')
 cachedir.mkdir(parents=True, exist_ok=True)
 
@@ -79,25 +83,67 @@ def get_missing(inchi_tok_pairs):
 
 # BUILD PREDICTION FUNCTION =====================================================
 
-async def process_batches():
-    BATCH_SIZE = 100000
-    num_combinations = len(inchi_list) * len(property_tokens)
-    rand_inchi, rand_tok = random.sample(inchi_list, len(inchi_list)), random.sample(property_tokens, len(property_tokens))
-    tuple_generator = it.product(rand_inchi, rand_tok)
-    batch_generator = it.batched(tuple_generator, BATCH_SIZE)
-    num_batches = num_combinations // BATCH_SIZE
+# async def process_batches():
+#     BATCH_SIZE = 100000
+#     num_combinations = len(inchi_list) * len(property_tokens)
+#     rand_inchi, rand_tok = random.sample(inchi_list, len(inchi_list)), random.sample(property_tokens, len(property_tokens))
+#     tuple_generator = it.product(rand_inchi, rand_tok)
+#     batch_generator = it.batched(tuple_generator, BATCH_SIZE)
+#     num_batches = num_combinations // BATCH_SIZE
     
-    sqlite_lock = threading.Lock()
-    semaphore = asyncio.Semaphore(40)
+#     sqlite_lock = threading.Lock()
+#     semaphore = asyncio.Semaphore(40)
 
-    for batch in tqdm(batch_generator, total=num_batches, desc="Processing batches"):
-        new_inchi_tok_pairs = get_missing(batch)
-        print(f"new inchi-tok pairs: {len(new_inchi_tok_pairs)}")
-        # predictions = [pdaa.async_predict(inchi, tok, semaphore) for inchi, tok in new_inchi_tok_pairs]
-        predictions = [async_predict(inchi, tok, semaphore) for inchi, tok in new_inchi_tok_pairs]
-        results = await tqdm_asyncio.gather(*predictions, desc="predicting...")
-        # pdaa.add_predictions(results, sqlite_lock)
-        add_predictions(results, sqlite_lock)
-        print(f"Processed batch: {len(results)}")
+#     for batch in tqdm(batch_generator, total=num_batches, desc="Processing batches"):
+#         new_inchi_tok_pairs = get_missing(batch)
+#         print(f"new inchi-tok pairs: {len(new_inchi_tok_pairs)}")
+#         # predictions = [pdaa.async_predict(inchi, tok, semaphore) for inchi, tok in new_inchi_tok_pairs]
+#         predictions = [async_predict(inchi, tok, semaphore) for inchi, tok in new_inchi_tok_pairs]
+#         results = await tqdm_asyncio.gather(*predictions, desc="predicting...")
+#         # pdaa.add_predictions(results, sqlite_lock)
+#         add_predictions(results, sqlite_lock)
+#         print(f"Processed batch: {len(results)}")
     
-asyncio.run(process_batches())
+# asyncio.run(process_batches())
+
+# NEW --------------- helper to write a whole dict for one inchi
+def add_prediction_dict(inchi, predictions_dict, lock):
+    rows = [
+        (inchi, tok, score)
+        for tok, score in predictions_dict.items()
+    ]
+    with lock, sqlite3.connect(DB_PATH) as conn:
+        conn.executemany(
+            'INSERT OR REPLACE INTO predictions VALUES (?,?,?)',
+            rows
+        )
+        conn.commit()
+
+# NEW --------------- async wrapper around /predict_all
+async def async_predict_all(inchi, semaphore):
+    async with semaphore:
+        resp = await chemprop.chemprop_predict_all_async(inchi)
+        # The endpoint returns a list of {"property_token": "...", "positive_prediction": float}
+        return inchi, {d["property_token"]: d["positive_prediction"] for d in resp}
+
+# MAIN -------------- outer loop now one call per inchi
+async def process():
+    semaphore    = asyncio.Semaphore(40)
+    lock         = threading.Lock()
+    inchi_queue  = inchi_list[:]          # shuffle for load-balancing
+    random.shuffle(inchi_queue)
+
+    for inchi in tqdm(inchi_queue, desc="InChI processed", unit="inchi"):
+        # skip if we already have every token for this inchi
+        with sqlite3.connect(DB_PATH) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM predictions WHERE inchi = ?", (inchi,)
+            ).fetchone()[0]
+        if count == len(property_tokens):
+            continue                        # nothing missing → next inchi
+
+        # launch async prediction
+        inchi_, pred_dict = await async_predict_all(inchi, semaphore)
+        add_prediction_dict(inchi_, pred_dict, lock)
+
+asyncio.run(process())
