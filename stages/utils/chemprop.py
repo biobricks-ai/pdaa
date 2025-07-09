@@ -26,6 +26,12 @@ def get_chemprop_prediction(inchi: str, property_token: str) -> dict:
 def get_chemprop_prediction_safe(inchi: str, property_token: str, retries: int = 5, delay: int = 2) -> dict:
     return make_safe(get_chemprop_prediction)(inchi, property_token, retries, delay)
 
+@retry(
+    stop=stop_after_attempt(20),           # up to 20 tries
+    wait=wait_exponential(multiplier=1, min=2, max=20),  # 2 s, 4 s, 8 s…, max 20 s for all subsequent retries
+    retry=(lambda retry_state:
+           isinstance(retry_state.outcome.exception(), requests.RequestException))
+)
 def chemprop_predict_all(inchi: str) -> list[dict]:
     base_url = "http://chemprop-transformer-alb-2126755060.us-east-1.elb.amazonaws.com/predict_all"
     params = {"inchi": inchi}
