@@ -3,7 +3,6 @@ import threading
 import random
 sys.path.append('./')
 import stages.utils.chemprop as chemprop
-import stages.utils.pdaa as pdaa
 import asyncio
 import pandas as pd
 import pathlib
@@ -15,10 +14,48 @@ import random
 from tqdm.asyncio import tqdm as tqdm_async, tqdm_asyncio
 from tqdm import tqdm
 
+async def async_predict(inchi, tok, semaphore):
+    async with semaphore:
+        result = await chemprop.get_chemprop_prediction_async(
+            inchi=inchi, property_token=tok
+        )
+        if result['error'] is not None:
+            raise Exception(f"Error: {result['error']}")
+        return inchi, tok, result['result']           # return all three values
+        
+def add_predictions(predictions, lock):
+    with lock:
+        with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
+            conn.executemany(
+                'INSERT OR IGNORE INTO predictions '
+                '(inchi, property_token, positive_prediction) '
+                'VALUES (?, ?, ?)',
+                predictions
+            )
+            
 # SETUP PATHS AND CACHES ========================================================
 brickdir = pathlib.Path('brick')
+brickdir.mkdir(parents=True, exist_ok=True)
 cachedir = pathlib.Path('cache/model_phthalates')
 cachedir.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# DATABASE INITIALISATION (run once per process)
+# ---------------------------------------------------------------------------
+def init_db():
+    brickdir.mkdir(parents=True, exist_ok=True)          # Folder must exist
+    db_path = brickdir / 'predictions.sqlite'
+    with sqlite3.connect(db_path) as conn:
+        conn.execute('PRAGMA journal_mode=WAL;')          # Better concurrency
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS predictions (
+                inchi            TEXT NOT NULL,
+                property_token   TEXT NOT NULL,
+                positive_prediction REAL,
+                PRIMARY KEY (inchi, property_token)       -- prevent duplicates
+            );
+        ''')
+init_db()
 
 # LOAD CHEMPROP-TRANSFORMER PROPERTY TOKENS =====================================
 with sqlite3.connect(bb.assets('chemprop-transformer').cvae_sqlite) as con:
@@ -56,9 +93,11 @@ async def process_batches():
     for batch in tqdm(batch_generator, total=num_batches, desc="Processing batches"):
         new_inchi_tok_pairs = get_missing(batch)
         print(f"new inchi-tok pairs: {len(new_inchi_tok_pairs)}")
-        predictions = [pdaa.async_predict(inchi, tok, semaphore) for inchi, tok in new_inchi_tok_pairs]
+        # predictions = [pdaa.async_predict(inchi, tok, semaphore) for inchi, tok in new_inchi_tok_pairs]
+        predictions = [async_predict(inchi, tok, semaphore) for inchi, tok in new_inchi_tok_pairs]
         results = await tqdm_asyncio.gather(*predictions, desc="predicting...")
-        pdaa.add_predictions(results, sqlite_lock)
+        # pdaa.add_predictions(results, sqlite_lock)
+        add_predictions(results, sqlite_lock)
         print(f"Processed batch: {len(results)}")
     
 asyncio.run(process_batches())

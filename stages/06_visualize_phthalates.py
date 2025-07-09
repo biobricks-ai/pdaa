@@ -83,7 +83,9 @@ savedf.to_parquet(tmpdir / 'phthalates_clustered.parquet')
 sample_indices = np.random.choice(distance_matrix.shape[0], size=1000, replace=False)
 sample_distance_matrix = distance_matrix[np.ix_(sample_indices, sample_indices)]
 sns.clustermap(sample_distance_matrix, cmap='viridis', figsize=(10, 10))
-plt.title('Heatmap of Phthalates Clusters')
+# center the title
+plt.title('Heatmap of Phthalates Clusters', pad=20, fontsize=16, loc='center')
+# plt.xlabel('Molecules')
 plt.savefig(outdir / 'phthalates_clusters_heatmap.png')
 
 # Create a barchart of the cluster sizes
