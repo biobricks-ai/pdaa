@@ -4,7 +4,7 @@ import requests
 import sys
 sys.path.append('./')
 import stages.utils.openai as openai_utils
-import stages.utils.chemprop as chemprop
+# import stages.utils.chemprop as chemprop
 import stages.utils.pdaa as pdaa
 import stages.utils.pubchem as pubchem
 import stages.utils.sparql as sparql
@@ -129,8 +129,8 @@ for name, weight in zip(example_names, example_weights):
     print(f"{name}: {weight:.2f}")
 
 # run the model on the example phthalates
-# _ = pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
-_ = predict_all_properties_with_sqlite_cache(example_inchi)
+_ = pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
+# _ = predict_all_properties_with_sqlite_cache(example_inchi)
 
 # which phthalate has the lowest mean ICE activity?
 # region ICE ACTIVITY ===============================================================
@@ -138,8 +138,7 @@ def build_phthalate_ice_activity_df():
     print("Building phthalate ICE activity dataframe...")
     
     print("Querying PDAA graph for URI, title and token mappings...")
-    # uri_title_token = sparql.Query(pdaa.pdaa_graph) \
-    uri_title_token = sparql.Query(pdaa_graph) \
+    uri_title_token = sparql.Query(pdaa.pdaa_graph) \
         .select_typed({'uri': str, 'pp': str, 'title': str, 'token': int}) \
         .where('?pp a toxindex:predicted_property') \
         .where('?pp <http://purl.org/dc/elements/1.1/title> ?title') \
@@ -156,7 +155,14 @@ def build_phthalate_ice_activity_df():
         query = f'SELECT * FROM predictions WHERE property_token IN ({tokens})'
         ice_preds = pd.read_sql(query, conn)
 
-    assert all(inchi in ice_preds['inchi'].tolist() for inchi in example_inchi)
+    try:
+        assert all(inchi in ice_preds['inchi'].tolist() for inchi in example_inchi)
+    except AssertionError:
+        print(ice_preds['inchi'])
+        bool_array = [inchi in ice_preds['inchi'].tolist() for inchi in example_inchi]
+        print(bool_array)
+        print("Some example InChIs are not present in the predictions data. Please check the SQLite database.")
+        raise
 
     print("Processing predictions data...")
     df = ice_preds.sort_values('positive_prediction', ascending=False)[['inchi', 'property_token', 'positive_prediction']]
@@ -174,7 +180,11 @@ def build_phthalate_ice_activity_df():
         only_one_ring = m.GetRingInfo().NumRings() == 1
         return dp and only_coh and only_one_ring
 
-    assert all(is_diester_phthalate(m) for m in example_phthalates)
+    try:
+        assert all(is_diester_phthalate(m) for m in example_phthalates)
+    except AssertionError:
+        print("Some example phthalates are not diester phthalates. Please check the SMARTS pattern.")
+        raise
 
     print("Filtering for diester phthalates...")
     filtered_phthalates = inchi_mol_df[inchi_mol_df['mol'].progress_apply(is_diester_phthalate)]['inchi']

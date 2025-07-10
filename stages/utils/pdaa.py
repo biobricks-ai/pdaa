@@ -24,7 +24,9 @@ cachedir.mkdir(parents=True, exist_ok=True)
 faiss_index = faiss.read_index('cache/associate_properties_with_aopwiki/faiss_index_cosine.index')
 
 # Create a SPARQL store pointing to the Blazegraph endpoint
-pdaa_graph = rdflib.Graph(store=SPARQLStore('http://localhost:9999/blazegraph/namespace/pdaa/sparql'))
+# pdaa_graph = rdflib.Graph(store=SPARQLStore('http://localhost:9999/blazegraph/namespace/pdaa/sparql'))
+pdaa_graph = rdflib.Graph(store=SPARQLStore('http://localhost:9999/bigdata/namespace/pdaa/sparql'))
+
 pdaa_graph.namespace_manager.bind('aop', rdflib.Namespace('http://aopkb.org/aop_ontology#'))
 pdaa_graph.namespace_manager.bind('toxindex', rdflib.Namespace('http://toxindex.com/ontology/'))
 pdaa_graph.namespace_manager.bind('dcterms', rdflib.Namespace('http://purl.org/dc/elements/1.1/'))
@@ -104,14 +106,14 @@ def is_missing(inchi_list):
 def predict_all_properties_with_sqlite_cache(inchi_list):
     missing_inchi = is_missing(inchi_list)
     preds = []
-    for inchi in missing_inchi:
+    for inchi in tqdm(missing_inchi, desc="Predicting missing InChIs"):
         preds.extend(chemprop.chemprop_predict_all(inchi))
     
     preds = [(fullpred['inchi'],int(fullpred['property_token']),fullpred['value']) for fullpred in preds]
     add_predictions(preds, sqlite_lock)
 
     non_missing_inchi = [inchi for inchi in inchi_list if inchi not in missing_inchi]
-    for tok in proptoken_uris['token']:
+    for tok in tqdm(proptoken_uris['token'], desc="Predicting non-missing InChIs"):
         preds.extend(lookup_predictions([(inchi, tok) for inchi in non_missing_inchi]))
 
     return preds
