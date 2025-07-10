@@ -24,82 +24,68 @@ from rdkit.Chem import Draw
 from rdkit.Chem import AllChem
 import threading
 
-import seaborn as sns
 import matplotlib.pyplot as plt
+import seaborn as sns
+import scipy.cluster.hierarchy as sch
+from scipy.spatial.distance import pdist
+from matplotlib.colors import Normalize
+from matplotlib import cm
 
-# import rdflib
-# from rdflib.plugins.stores.sparqlstore import SPARQLStore
+import re
 
-# brickdir = pathlib.Path('brick')
-# sqlite_lock = threading.Lock()
+def _styled_heatmap(matrix, row_colors, *, dpi=600,
+                    fontcolor='white', linecolor='black'):
+    """
+    Wrapper around seaborn.clustermap with the same visual
+    tweaks used in build_heatmap.py (_generate_heatmap).
+    - matrix: rows = phthalates, cols = ICE assays
+    - row_colors: list-like, same length as matrix.shape[0]
+    """
+    # Cluster only columns; we already ordered rows
+    g = sns.clustermap(matrix,
+                       square=True,       # ← force equal-sized cells
+                       cbar_kws={'drawedges': False},  # disable seaborn’s built-in bar
+                       cmap='viridis',
+                       row_cluster=False, col_cluster=True,
+                       row_colors=row_colors,
+                       xticklabels=False, yticklabels=False,
+                       linecolor=linecolor, linewidths=0.5,
+                       figsize=(18, 9),
+                    #    cbar_pos=(0.91, 0.3, 0.02, 0.4),
+                       cbar_pos=(0.95, 0.3, 0.02, 0.4),
+                       dendrogram_ratio=(0.10, 0.05),
+                       tree_kws={'linewidths': 0.5})
+    # Remove any stray colorbar
+    if hasattr(g, 'cax') and g.cax:
+        g.cax.remove()
 
-# cachedir = pathlib.Path('cache') / 'util' / 'pdaa'
-# cachedir.mkdir(parents=True, exist_ok=True)
+    # Create a new colorbar on its own axes
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    divider = make_axes_locatable(g.ax_heatmap)
+    cax = divider.append_axes("right", size="2%", pad=0.6)
+    sm  = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=matrix.min().min(),
+                                                                vmax=matrix.max().max()))
+    sm.set_array([])
+    cb = g.figure.colorbar(sm, cax=cax)
+    cb.set_label('Activity Score', fontsize=18, labelpad=10)
+    cb.ax.tick_params(labelsize=14)
 
-# # Create a SPARQL store pointing to the Blazegraph endpoint
-# pdaa_graph = rdflib.Graph(store=SPARQLStore('http://localhost:9999/blazegraph/namespace/pdaa/sparql'))
-# pdaa_graph.namespace_manager.bind('aop', rdflib.Namespace('http://aopkb.org/aop_ontology#'))
-# pdaa_graph.namespace_manager.bind('toxindex', rdflib.Namespace('http://toxindex.com/ontology/'))
-# pdaa_graph.namespace_manager.bind('dcterms', rdflib.Namespace('http://purl.org/dc/elements/1.1/'))
-# pdaa_graph_cache = cachedir / 'pdaa_graph'
+    # Hide col dendrogram but keep clustering
+    g.ax_col_dendrogram.set_visible(False)
 
-# sqlite_lock = threading.Lock()
-# # Fetch URIs linked to property tokens
-# # TODO some predicted_properties have multiple tokens
-# proptoken_uris = sparql.Query(pdaa_graph, pdaa_graph_cache) \
-#     .select_typed({'uri': str, 'proptoken': str, 'token': int, 'title': str}) \
-#     .where('?proptoken <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
-#     .where('?proptoken a <http://toxindex.com/ontology/predicted_property>') \
-#     .where('?proptoken rdf:value ?token') \
-#     .where('?proptoken <http://purl.org/dc/elements/1.1/title> ?title') \
-#     .cache_execute() \
-#     .groupby('uri').first().reset_index()
+    # Tighten layout & label axes like Fig 1
+    g.ax_heatmap.set_xlabel('DART Assays', color=fontcolor, fontsize=20)
+    g.ax_heatmap.set_ylabel('Diester Phthalates', color=fontcolor, fontsize=20)
 
-# def add_predictions(predictions, lock):
-#     with lock:
-#         with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
-#             for inchi, property_token, positive_prediction in predictions:
-#                 conn.execute('INSERT INTO predictions (inchi, property_token, positive_prediction) VALUES (?, ?, ?)', (inchi, property_token, positive_prediction))
+    # Label the colorbar
+    cbar = g.ax_heatmap.collections[0].colorbar
+    cbar.set_label('Activity Score', fontsize=20, labelpad=10)
 
-# def is_missing(inchi_list):
-#     inchi_tok_pairs = [(inchi, tok) for inchi in inchi_list for tok in proptoken_uris['token']]
-#     missing_inchi = set()
-#     with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
-#         for inchi, property_token in inchi_tok_pairs:
-#             if inchi in missing_inchi:
-#                 continue
-#             cursor = conn.execute('SELECT * FROM predictions WHERE inchi = ? AND property_token = ?', (inchi, property_token))
-#             exists = cursor.fetchone() is not None
-#             if not exists:
-#                 missing_inchi.add(inchi)
-#     return missing_inchi
+    # Tidy up margins so nothing is clipped
+    g.figure.subplots_adjust(left=0.05, right=0.90, top=0.95, bottom=0.05)
 
-# def lookup_predictions(inchi_tok_pairs):
-#     with sqlite_lock:
-#         with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
-#             results = []
-#             for inchi, property_token in inchi_tok_pairs:
-#                 cursor = conn.execute("""SELECT inchi, CAST(property_token AS INTEGER) as property_token, positive_prediction FROM predictions 
-#                                       WHERE inchi = ? AND property_token = ?""", (inchi, property_token))
-#                 result = cursor.fetchone()
-#                 if result is not None:
-#                     results.append((inchi, property_token, result[2]))
-#             return results
-
-# def predict_all_properties_with_sqlite_cache(inchi_list):
-#     missing_inchi = is_missing(inchi_list)
-#     preds = []
-#     for inchi in missing_inchi:
-#         preds.extend(chemprop.chemprop_predict_all(inchi))
-    
-#     preds = [(fullpred['inchi'],int(fullpred['property_token']),fullpred['value']) for fullpred in preds]
-#     add_predictions(preds, sqlite_lock)
-
-#     non_missing_inchi = [inchi for inchi in inchi_list if inchi not in missing_inchi]
-#     for tok in proptoken_uris['token']:
-#         preds.extend(lookup_predictions([(inchi, tok) for inchi in non_missing_inchi]))
-
-#     return preds
+    return g  # caller can add arrows, bars, etc.
+# --------------------------------------------------------------------
 
 tqdm.pandas()
 
@@ -146,8 +132,39 @@ def build_phthalate_ice_activity_df():
         .where('?pp <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
         .execute().groupby('uri').first().reset_index()
 
-    ice_assays = uri_title_token[uri_title_token['uri'].str.contains('ice.ntp')]
-    print(f"Found {len(ice_assays)} ICE assays")
+    # ice_assays = uri_title_token[uri_title_token['uri'].str.contains('ice.ntp')]
+    # print(f"Found {len(ice_assays)} ICE assays")
+
+
+    
+    # wherever your file lives…
+    dart_path = pathlib.Path('resources/DART_endpoints.txt')
+
+    with open(dart_path) as f:
+        # strip whitespace, drop empties, remove punctuation, lowercase
+        dart_clean = [
+            re.sub(r'[^A-Za-z0-9]', '', line).lower()
+            for line in f
+            if line.strip()
+        ]
+
+    uri_title_token['clean_title'] = (
+        uri_title_token['title']
+        .str.strip()
+        .str.lower()
+        .apply(lambda s: re.sub(r'[^A-Za-z0-9]', '', s))
+    )
+
+    # build a boolean mask: True if any dart_clean entry is a substring
+    mask = uri_title_token['clean_title'].apply(
+        lambda ct: any(d in ct for d in dart_clean)
+    )
+
+    # replace the old ICE‐only line with this:
+    ice_assays = uri_title_token[mask]
+    print(f"Found {len(ice_assays)} DART-filtered ICE assays")
+
+
 
     print("Fetching predictions from SQLite...")
     with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
@@ -189,6 +206,9 @@ def build_phthalate_ice_activity_df():
     print("Filtering for diester phthalates...")
     filtered_phthalates = inchi_mol_df[inchi_mol_df['mol'].progress_apply(is_diester_phthalate)]['inchi']
     df3 = df2[df2['inchi'].isin(filtered_phthalates)]
+    # Ensure both columns are of the same type (int)
+    df3['property_token'] = df3['property_token'].astype(int)
+    ice_assays['token'] = ice_assays['token'].astype(int)
     df3 = df3.merge(ice_assays, left_on='property_token', right_on='token')[['uri','title','inchi','mol','positive_prediction']]
     print(f"Final dataset contains {len(df3)} rows")
     return df3
@@ -234,6 +254,11 @@ def cluster_rows_and_make_heatmap():
 
     # Reorder the matrix
     reordered_matrix = activity_matrix_filled.iloc[cluster_order, col_order]
+    # ─── Map each InChI to its new row index ─────────────────────────────
+    reordered_indices = {
+        inchi: pos
+        for pos, inchi in enumerate(reordered_matrix.index)
+    }
 
     # Calculate mean activity per chemical across all assays
     mean_activity = reordered_matrix.mean(axis=1)
@@ -242,64 +267,162 @@ def cluster_rows_and_make_heatmap():
     cluster_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Blue, Red, Green
     row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
 
-    # Create figure with two subplots side by side
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(35, 10), gridspec_kw={'width_ratios': [4, 1]})
+    # # Create figure with two subplots side by side
+    # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(35, 10), gridspec_kw={'width_ratios': [4, 1]})
 
-    # Create heatmap
-    im = ax1.imshow(reordered_matrix, 
-            cmap='RdYlBu_r',
-            aspect='auto',
-            vmin=0,
-            vmax=1)
+    # # Create heatmap
+    # im = ax1.imshow(reordered_matrix, 
+    #         cmap='RdYlBu_r',
+    #         aspect='auto',
+    #         vmin=0,
+    #         vmax=1)
 
-    plt.colorbar(im, ax=ax1, label='Activity Score')
+    # plt.colorbar(im, ax=ax1, label='Activity Score')
 
-    # Add labels for heatmap
-    ax1.set_xlabel('ICE assays', fontsize=24)
-    ax1.set_ylabel('Selected Phthalates', fontsize=24)
+    # # Add labels for heatmap
+    # ax1.set_xlabel('ICE assays', fontsize=24)
+    # ax1.set_ylabel('Selected Phthalates', fontsize=24)
 
-    # Keep ticks hidden since there are too many to show clearly
-    ax1.set_xticks([])
-    ax1.set_yticks([])
+    # # Keep ticks hidden since there are too many to show clearly
+    # ax1.set_xticks([])
+    # ax1.set_yticks([])
 
-    # Map to reordered positions
-    reordered_indices = {inchi: i for i, inchi in enumerate(reordered_matrix.index)}
+    # # Map to reordered positions
+    # reordered_indices = {inchi: i for i, inchi in enumerate(reordered_matrix.index)}
     
-    
-    for i, inchi in enumerate(example_inchi2name):
-        if inchi in reordered_indices:
-            name = example_inchi2name[inchi]
-            pos = reordered_indices[inchi]
-            cluster = row_clusters[cluster_order[pos]]  # Get cluster for this ordered position
-            color = cluster_colors[cluster]  # Get color for this cluster
-            lbl = f'← {name}' if name == 'DEHP' else f'←'
-            ax1.text(reordered_matrix.shape[1], pos, 
-                    lbl, ha='left', va='center', 
-                    fontsize=26, color=color)
+    # for i, inchi in enumerate(example_inchi2name):
+    #     if inchi in reordered_indices:
+    #         name = example_inchi2name[inchi]
+    #         pos = reordered_indices[inchi]
+    #         cluster = row_clusters[cluster_order[pos]]  # Get cluster for this ordered position
+    #         color = cluster_colors[cluster]  # Get color for this cluster
+    #         lbl = f'← {name}' if name == 'DEHP' else f'←'
+    #         ax1.text(reordered_matrix.shape[1], pos, 
+    #                 lbl, ha='left', va='center', 
+    #                 fontsize=26, color=color)
 
-    ax1.set_title('Clustered Heatmap of Selected Diester Phthalate Activity Across ICE Assays',
-            fontsize=28, pad=20)
+    # ax1.set_title('Clustered Heatmap of Selected Diester Phthalate Activity Across ICE Assays',
+    #         fontsize=28, pad=20)
 
-    # Create horizontal bar chart with cluster colors
-    ax2.barh(range(len(mean_activity)), mean_activity, color=row_colors)
-    # Add annotations for example phthalates on the bar chart
-    for i, (idx, row) in enumerate(reordered_matrix.iterrows()):
-        if idx in example_inchi2name:
-            name = example_inchi2name[idx]
-            ax2.text(mean_activity[i], i, f' {name}', va='center', fontsize=10)
+    create_new_cmap = False
+    if create_new_cmap:
+        # --- new seaborn heatmap based on build_heatmap style -------------
+        row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
+        g = _styled_heatmap(reordered_matrix, row_colors)
+        # # ─── Manual colorbar ───────────────────────────────────────
+        # if hasattr(g, 'cax') and g.cax is not None:
+        #     g.cax.remove()
+
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        divider = make_axes_locatable(g.ax_heatmap)
+        cax = divider.append_axes("right", size="2%", pad=0.6)
+
+        # Use the same colormap & normalization
+        vmin = reordered_matrix.values.min()
+        vmax = reordered_matrix.values.max()
+        sm = plt.cm.ScalarMappable(cmap='viridis',
+                                norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm.set_array([])
+
+        cb = g.figure.colorbar(sm, cax=cax)
+        cb.set_label('Activity Score', fontsize=18, labelpad=10)
+        cb.ax.tick_params(labelsize=14)
+
+    row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
+    # keep the single colour-bar that _styled_heatmap makes
+    g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black')
+
+    # from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    # # Add a single bar-axis to the right of the heatmap
+    # divider = make_axes_locatable(g.ax_heatmap)
+    # ax_bar = divider.append_axes("right", size="15%", pad=0.5)
+
+    # ax_bar.barh(range(len(mean_activity)), mean_activity, color=row_colors)
+    # ax_bar.set_ylim(g.ax_heatmap.get_ylim())
+    # ax_bar.set_xlabel('Mean Activity', fontsize=20)
+    # ax_bar.set_yticks([])
+
+    # # Map to reordered positions
+    # reordered_indices = {inchi: i for i, inchi in enumerate(reordered_matrix.index)}
+
+    # for inchi, name in example_inchi2name.items():
+    #     if inchi in reordered_indices:
+    #         pos = reordered_indices[inchi]
+    #         g.ax_heatmap.text(reordered_matrix.shape[1], pos,
+    #                         '← '+name if name == 'DEHP' else '←',
+    #                         va='center', ha='left',
+    #                         fontsize=24, color='white')
+
+
+    # # Create horizontal bar chart with cluster colors
+    # ax_bar.barh(range(len(mean_activity)), mean_activity, color=row_colors)
+    # # Add annotations for example phthalates on the bar chart
+    # for i, (idx, row) in enumerate(reordered_matrix.iterrows()):
+    #     if idx in example_inchi2name:
+    #         name = example_inchi2name[idx]
+    #         ax_bar.text(mean_activity[i], i, f' {name}', va='center', fontsize=10)
             
-    ax2.set_ylim(ax1.get_ylim())
-    ax2.set_xlabel('Mean Activity', fontsize=24)
-    ax2.set_yticks([])
+    # ax_bar.set_ylim(g.ax_heatmap.get_ylim())
+    # ax_bar.set_xlabel('Mean Activity', fontsize=24)
+    # ax_bar.set_yticks([])
 
-    # Add legend for clusters
-    legend_elements = [plt.Rectangle((0,0),1,1, facecolor=cluster_colors[i], 
-                                label=f'Cluster {i+1}\n(n={np.sum(row_clusters == i)})') for i in range(n_clusters)]
-    ax2.legend(handles=legend_elements, loc='upper right', title='Clusters')
+    # # Add legend for clusters
+    # legend_elements = [plt.Rectangle((0,0),1,1, facecolor=cluster_colors[i], 
+    #                             label=f'Cluster {i+1}\n(n={np.sum(row_clusters == i)})') for i in range(n_clusters)]
+    # ax_bar.legend(handles=legend_elements, loc='upper right', title='Clusters')
 
-    plt.tight_layout()
-    plt.savefig(cachedir / "phthalate_activity_heatmap.png", dpi=600, bbox_inches='tight')
-    plt.close()
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    # ─── Attach a fresh bar axis ──────────────────────────────────────────
+    divider = make_axes_locatable(g.ax_heatmap)
+    ax_bar = divider.append_axes("right", size="15%", pad=0.8)
+
+    # ─── Plot mean activity ──────────────────────────────────────────────
+    ax_bar.barh(range(len(mean_activity)), mean_activity, color=row_colors)
+
+    # ─── Annotate the example phthalates ────────────────────────────────
+    for inchi, name in example_inchi2name.items():
+        pos = reordered_indices.get(inchi)
+        if pos is not None:
+            ax_bar.text(mean_activity[pos], pos,
+                        f' {name}',
+                        va='center', fontsize=10, color='black')
+
+    # ─── Tidy up axis ────────────────────────────────────────────────────
+    ax_bar.set_ylim(g.ax_heatmap.get_ylim())
+    ax_bar.set_xlabel('Mean Activity', fontsize=20)
+    ax_bar.set_yticks([])
+
+    # ─── Cluster legend ─────────────────────────────────────────────────
+    legend_elements = [
+        plt.Rectangle((0,0),1,1, facecolor=cluster_colors[i],
+                      label=f'Cluster {i+1}\n(n={np.sum(row_clusters==i)})')
+        for i in range(n_clusters)
+    ]
+    ax_bar.legend(
+        handles=legend_elements,
+        loc='upper left',
+        bbox_to_anchor=(1.05, 1.0),
+        borderaxespad=0.0,
+        title='Clusters',
+        fontsize=12
+    )
+
+    g.figure.subplots_adjust(
+        left=0.02,   # plenty of space for row colors / dendrogram
+        right=0.9,  # leave room for bar & legend
+        top=0.98,
+        bottom=0.06
+    )
+    g.figure.savefig(cachedir / "phthalate_activity_heatmap.png", dpi=600)
+    plt.close(g.figure)
+
+    # g.figure.savefig(
+    #     cachedir / "phthalate_activity_heatmap.png",
+    #     dpi=600, bbox_inches='tight'
+    # )
+    # plt.close(g.figure)
 
     assay_activity_counts = phthalate_df.reset_index().groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     assay_activity = assay_activity_counts.groupby('title')['positive_prediction'].mean().reset_index()
@@ -325,6 +448,9 @@ def cluster_rows_and_make_heatmap():
 
 clustered_phthalate_df = cluster_rows_and_make_heatmap()[['uri','title','inchi','mol','positive_prediction','cluster','cluster_color','example']]
 
+# save dataframes
+phthalate_df.to_csv(cachedir / 'phthalate_df.csv', index=False)
+clustered_phthalate_df.to_csv(cachedir / 'clustered_phthalate_df.csv', index=False)
 # endregion
 
 # region CHARACTERIZE PRIORITY PHTHALATES ===============================================================
@@ -451,7 +577,7 @@ def plot_phthalate_activity_relationships():
     print(caption)
 
 plot_phthalate_activity_relationships()
-
+# sys.exit()
 # endregion
 
 

@@ -14,6 +14,18 @@ import random
 from tqdm.asyncio import tqdm as tqdm_async, tqdm_asyncio
 from tqdm import tqdm
 
+from rdkit import Chem
+
+def is_diester_phthalate(m):
+    diester_phthalate = Chem.MolFromSmarts(
+        "[cH][cH]c(C(=O)OC[CH2,CH,C])c(C(=O)OC[CH2,CH,C])[cH][cH]"
+    )
+    dp = Chem.AddHs(m).HasSubstructMatch(diester_phthalate)
+    only_coh = all(atom.GetSymbol() in ['C', 'H', 'O'] for atom in m.GetAtoms())
+    only_one_ring = m.GetRingInfo().NumRings() == 1
+    return dp and only_coh and only_one_ring
+
+
 async def async_predict(inchi: str, tok: str, sem: asyncio.Semaphore):
     async with sem:
         resp = await chemprop.get_chemprop_prediction_async(
@@ -70,7 +82,13 @@ with sqlite3.connect(bb.assets('chemprop-transformer').cvae_sqlite) as con:
 # raw_df = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')
 raw_df = pd.read_parquet('cache/priority_phthalates/priority_phthalates.parquet')
 top_df = raw_df.sort_values(by='max_similarity', ascending=False)[['inchi', 'max_similarity']].drop_duplicates()
-inchi_list = top_df['inchi'].unique().tolist()
+# inchi_list = top_df['inchi'].unique().tolist()
+# keep only diester phthalates
+inchi_list = [
+    inch for inch in top_df['inchi'].unique()
+    if (mol := Chem.MolFromInchi(inch)) is not None
+    and is_diester_phthalate(mol)
+]
 
 # BATCH RUN ==============================================================
 def get_missing(inchi_tok_pairs):
@@ -82,31 +100,6 @@ def get_missing(inchi_tok_pairs):
             if not exists:
                 results.append((inchi, property_token))
     return results
-
-# BUILD PREDICTION FUNCTION =====================================================
-
-# async def process_batches():
-#     BATCH_SIZE = 100000
-#     num_combinations = len(inchi_list) * len(property_tokens)
-#     rand_inchi, rand_tok = random.sample(inchi_list, len(inchi_list)), random.sample(property_tokens, len(property_tokens))
-#     tuple_generator = it.product(rand_inchi, rand_tok)
-#     batch_generator = it.batched(tuple_generator, BATCH_SIZE)
-#     num_batches = num_combinations // BATCH_SIZE
-    
-#     sqlite_lock = threading.Lock()
-#     semaphore = asyncio.Semaphore(40)
-
-#     for batch in tqdm(batch_generator, total=num_batches, desc="Processing batches"):
-#         new_inchi_tok_pairs = get_missing(batch)
-#         print(f"new inchi-tok pairs: {len(new_inchi_tok_pairs)}")
-#         # predictions = [pdaa.async_predict(inchi, tok, semaphore) for inchi, tok in new_inchi_tok_pairs]
-#         predictions = [async_predict(inchi, tok, semaphore) for inchi, tok in new_inchi_tok_pairs]
-#         results = await tqdm_asyncio.gather(*predictions, desc="predicting...")
-#         # pdaa.add_predictions(results, sqlite_lock)
-#         add_predictions(results, sqlite_lock)
-#         print(f"Processed batch: {len(results)}")
-    
-# asyncio.run(process_batches())
 
 # NEW --------------- helper to write a whole dict for one inchi
 def add_prediction_dict(inchi, predictions_dict, lock):
