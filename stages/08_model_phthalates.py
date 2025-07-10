@@ -67,8 +67,10 @@ with sqlite3.connect(bb.assets('chemprop-transformer').cvae_sqlite) as con:
     property_tokens = sorted(list(set(property_tokens)))
 
 # LOAD ZINC PHTALATES DATA =====================================================
-raw_df = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')
-inchi_list = raw_df['inchi'].unique().tolist()
+# raw_df = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')
+raw_df = pd.read_parquet('cache/priority_phthalates/priority_phthalates.parquet')
+top_df = raw_df.sort_values(by='max_similarity', ascending=False)[['inchi', 'max_similarity']].drop_duplicates()
+inchi_list = top_df['inchi'].unique().tolist()
 
 # BATCH RUN ==============================================================
 def get_missing(inchi_tok_pairs):
@@ -124,7 +126,8 @@ async def async_predict_all(inchi, semaphore):
     async with semaphore:
         resp = await chemprop.chemprop_predict_all_async(inchi)
         # The endpoint returns a list of {"property_token": "...", "positive_prediction": float}
-        return inchi, {d["property_token"]: d["positive_prediction"] for d in resp}
+        # return inchi, {d["property_token"]: d["positive_prediction"] for d in resp}
+        return inchi, {d["property_token"]: d["value"] for d in resp}
 
 # MAIN -------------- outer loop now one call per inchi
 async def process():

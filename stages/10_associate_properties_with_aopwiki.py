@@ -27,8 +27,10 @@ tqdm.pandas()
 # outs: [aop_titles, aop_descriptions, aop_abstracts, key_events, membership, graph]
 ## BUILD AOPWIKI RDF ========================================================
 if not pathlib.Path('./hdtworkdir/out.nt').exists():
-    sr = functools.partial(subprocess.run, shell=True)
-    sr("git clone https://github.com/rdfhdt/hdt-cpp.git")
+    sr = functools.partial(subprocess.run, shell=True, check=True)
+    # install hdt-cpp docker container if not already installed
+    if not pathlib.Path('./hdt-cpp').exists():
+        sr("git clone https://github.com/rdfhdt/hdt-cpp.git")
     sr('docker build -t hdt hdt-cpp/.')
 
     # start the container
@@ -139,8 +141,8 @@ from rdflib import Literal, URIRef, XSD, RDFS, RDF
 proptokens = pd.read_csv(cachedir / 'proptokens.csv')
 embed_df = pd.read_csv(cachedir / 'embed_df.csv')
 
-proptokens[proptokens['uri'] == testuri]
-embed_df[embed_df['uri'] == testuri]
+# proptokens[proptokens['uri'] == testuri]
+# embed_df[embed_df['uri'] == testuri]
 DCTERMS = rdflib.Namespace('http://purl.org/dc/elements/1.1/')
 
 simgraph = rdflib.Graph()
@@ -191,7 +193,8 @@ import requests
 response = requests.delete(f'http://localhost:9999/blazegraph/namespace/pdaa')
 
 # create the pdaa namespace
-namespace_url = 'http://localhost:9999/blazegraph/namespace'
+# namespace_url = 'http://localhost:9999/blazegraph/namespace'
+namespace_url = 'http://localhost:9999/bigdata/namespace'
 headers = {'Content-Type': 'application/xml'}
 namespace_properties = '''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!DOCTYPE properties SYSTEM "http://java.sun.com/dtd/properties.dtd">

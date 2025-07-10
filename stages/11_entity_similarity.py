@@ -22,10 +22,84 @@ import rdkit, rdkit.Chem.rdMolDescriptors, rdkit.Chem.Crippen, rdkit.Chem.rdFing
 from rdkit import Chem
 from rdkit.Chem import Draw
 from rdkit.Chem import AllChem
-
+import threading
 
 import seaborn as sns
 import matplotlib.pyplot as plt
+
+# import rdflib
+# from rdflib.plugins.stores.sparqlstore import SPARQLStore
+
+# brickdir = pathlib.Path('brick')
+# sqlite_lock = threading.Lock()
+
+# cachedir = pathlib.Path('cache') / 'util' / 'pdaa'
+# cachedir.mkdir(parents=True, exist_ok=True)
+
+# # Create a SPARQL store pointing to the Blazegraph endpoint
+# pdaa_graph = rdflib.Graph(store=SPARQLStore('http://localhost:9999/blazegraph/namespace/pdaa/sparql'))
+# pdaa_graph.namespace_manager.bind('aop', rdflib.Namespace('http://aopkb.org/aop_ontology#'))
+# pdaa_graph.namespace_manager.bind('toxindex', rdflib.Namespace('http://toxindex.com/ontology/'))
+# pdaa_graph.namespace_manager.bind('dcterms', rdflib.Namespace('http://purl.org/dc/elements/1.1/'))
+# pdaa_graph_cache = cachedir / 'pdaa_graph'
+
+# sqlite_lock = threading.Lock()
+# # Fetch URIs linked to property tokens
+# # TODO some predicted_properties have multiple tokens
+# proptoken_uris = sparql.Query(pdaa_graph, pdaa_graph_cache) \
+#     .select_typed({'uri': str, 'proptoken': str, 'token': int, 'title': str}) \
+#     .where('?proptoken <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
+#     .where('?proptoken a <http://toxindex.com/ontology/predicted_property>') \
+#     .where('?proptoken rdf:value ?token') \
+#     .where('?proptoken <http://purl.org/dc/elements/1.1/title> ?title') \
+#     .cache_execute() \
+#     .groupby('uri').first().reset_index()
+
+# def add_predictions(predictions, lock):
+#     with lock:
+#         with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
+#             for inchi, property_token, positive_prediction in predictions:
+#                 conn.execute('INSERT INTO predictions (inchi, property_token, positive_prediction) VALUES (?, ?, ?)', (inchi, property_token, positive_prediction))
+
+# def is_missing(inchi_list):
+#     inchi_tok_pairs = [(inchi, tok) for inchi in inchi_list for tok in proptoken_uris['token']]
+#     missing_inchi = set()
+#     with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
+#         for inchi, property_token in inchi_tok_pairs:
+#             if inchi in missing_inchi:
+#                 continue
+#             cursor = conn.execute('SELECT * FROM predictions WHERE inchi = ? AND property_token = ?', (inchi, property_token))
+#             exists = cursor.fetchone() is not None
+#             if not exists:
+#                 missing_inchi.add(inchi)
+#     return missing_inchi
+
+# def lookup_predictions(inchi_tok_pairs):
+#     with sqlite_lock:
+#         with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
+#             results = []
+#             for inchi, property_token in inchi_tok_pairs:
+#                 cursor = conn.execute("""SELECT inchi, CAST(property_token AS INTEGER) as property_token, positive_prediction FROM predictions 
+#                                       WHERE inchi = ? AND property_token = ?""", (inchi, property_token))
+#                 result = cursor.fetchone()
+#                 if result is not None:
+#                     results.append((inchi, property_token, result[2]))
+#             return results
+
+# def predict_all_properties_with_sqlite_cache(inchi_list):
+#     missing_inchi = is_missing(inchi_list)
+#     preds = []
+#     for inchi in missing_inchi:
+#         preds.extend(chemprop.chemprop_predict_all(inchi))
+    
+#     preds = [(fullpred['inchi'],int(fullpred['property_token']),fullpred['value']) for fullpred in preds]
+#     add_predictions(preds, sqlite_lock)
+
+#     non_missing_inchi = [inchi for inchi in inchi_list if inchi not in missing_inchi]
+#     for tok in proptoken_uris['token']:
+#         preds.extend(lookup_predictions([(inchi, tok) for inchi in non_missing_inchi]))
+
+#     return preds
 
 tqdm.pandas()
 
@@ -55,7 +129,8 @@ for name, weight in zip(example_names, example_weights):
     print(f"{name}: {weight:.2f}")
 
 # run the model on the example phthalates
-_ = pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
+# _ = pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
+_ = predict_all_properties_with_sqlite_cache(example_inchi)
 
 # which phthalate has the lowest mean ICE activity?
 # region ICE ACTIVITY ===============================================================
@@ -63,7 +138,8 @@ def build_phthalate_ice_activity_df():
     print("Building phthalate ICE activity dataframe...")
     
     print("Querying PDAA graph for URI, title and token mappings...")
-    uri_title_token = sparql.Query(pdaa.pdaa_graph) \
+    # uri_title_token = sparql.Query(pdaa.pdaa_graph) \
+    uri_title_token = sparql.Query(pdaa_graph) \
         .select_typed({'uri': str, 'pp': str, 'title': str, 'token': int}) \
         .where('?pp a toxindex:predicted_property') \
         .where('?pp <http://purl.org/dc/elements/1.1/title> ?title') \
