@@ -4,7 +4,6 @@ import requests
 import sys
 sys.path.append('./')
 import stages.utils.openai as openai_utils
-# import stages.utils.chemprop as chemprop
 import stages.utils.pdaa as pdaa
 import stages.utils.pubchem as pubchem
 import stages.utils.sparql as sparql
@@ -63,6 +62,8 @@ def _styled_heatmap(matrix, row_colors, *, dpi=600,
     from mpl_toolkits.axes_grid1 import make_axes_locatable
     divider = make_axes_locatable(g.ax_heatmap)
     cax = divider.append_axes("right", size="2%", pad=0.6)
+    # expose the divider so callers can add more axes without destroying the layout
+    g.divider = divider
     sm  = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=matrix.min().min(),
                                                                 vmax=matrix.max().max()))
     sm.set_array([])
@@ -116,7 +117,6 @@ for name, weight in zip(example_names, example_weights):
 
 # run the model on the example phthalates
 _ = pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
-# _ = predict_all_properties_with_sqlite_cache(example_inchi)
 
 # which phthalate has the lowest mean ICE activity?
 # region ICE ACTIVITY ===============================================================
@@ -132,12 +132,6 @@ def build_phthalate_ice_activity_df():
         .where('?pp <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
         .execute().groupby('uri').first().reset_index()
 
-    # ice_assays = uri_title_token[uri_title_token['uri'].str.contains('ice.ntp')]
-    # print(f"Found {len(ice_assays)} ICE assays")
-
-
-    
-    # wherever your file lives…
     dart_path = pathlib.Path('resources/DART_endpoints.txt')
 
     with open(dart_path) as f:
@@ -267,116 +261,18 @@ def cluster_rows_and_make_heatmap():
     cluster_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Blue, Red, Green
     row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
 
-    # # Create figure with two subplots side by side
-    # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(35, 10), gridspec_kw={'width_ratios': [4, 1]})
-
-    # # Create heatmap
-    # im = ax1.imshow(reordered_matrix, 
-    #         cmap='RdYlBu_r',
-    #         aspect='auto',
-    #         vmin=0,
-    #         vmax=1)
-
-    # plt.colorbar(im, ax=ax1, label='Activity Score')
-
-    # # Add labels for heatmap
-    # ax1.set_xlabel('ICE assays', fontsize=24)
-    # ax1.set_ylabel('Selected Phthalates', fontsize=24)
-
-    # # Keep ticks hidden since there are too many to show clearly
-    # ax1.set_xticks([])
-    # ax1.set_yticks([])
-
-    # # Map to reordered positions
-    # reordered_indices = {inchi: i for i, inchi in enumerate(reordered_matrix.index)}
-    
-    # for i, inchi in enumerate(example_inchi2name):
-    #     if inchi in reordered_indices:
-    #         name = example_inchi2name[inchi]
-    #         pos = reordered_indices[inchi]
-    #         cluster = row_clusters[cluster_order[pos]]  # Get cluster for this ordered position
-    #         color = cluster_colors[cluster]  # Get color for this cluster
-    #         lbl = f'← {name}' if name == 'DEHP' else f'←'
-    #         ax1.text(reordered_matrix.shape[1], pos, 
-    #                 lbl, ha='left', va='center', 
-    #                 fontsize=26, color=color)
-
-    # ax1.set_title('Clustered Heatmap of Selected Diester Phthalate Activity Across ICE Assays',
-    #         fontsize=28, pad=20)
-
-    create_new_cmap = False
-    if create_new_cmap:
-        # --- new seaborn heatmap based on build_heatmap style -------------
-        row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
-        g = _styled_heatmap(reordered_matrix, row_colors)
-        # # ─── Manual colorbar ───────────────────────────────────────
-        # if hasattr(g, 'cax') and g.cax is not None:
-        #     g.cax.remove()
-
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
-        divider = make_axes_locatable(g.ax_heatmap)
-        cax = divider.append_axes("right", size="2%", pad=0.6)
-
-        # Use the same colormap & normalization
-        vmin = reordered_matrix.values.min()
-        vmax = reordered_matrix.values.max()
-        sm = plt.cm.ScalarMappable(cmap='viridis',
-                                norm=plt.Normalize(vmin=vmin, vmax=vmax))
-        sm.set_array([])
-
-        cb = g.figure.colorbar(sm, cax=cax)
-        cb.set_label('Activity Score', fontsize=18, labelpad=10)
-        cb.ax.tick_params(labelsize=14)
 
     row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
     # keep the single colour-bar that _styled_heatmap makes
     g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black')
 
-    # from mpl_toolkits.axes_grid1 import make_axes_locatable
-
-    # # Add a single bar-axis to the right of the heatmap
-    # divider = make_axes_locatable(g.ax_heatmap)
-    # ax_bar = divider.append_axes("right", size="15%", pad=0.5)
-
-    # ax_bar.barh(range(len(mean_activity)), mean_activity, color=row_colors)
-    # ax_bar.set_ylim(g.ax_heatmap.get_ylim())
-    # ax_bar.set_xlabel('Mean Activity', fontsize=20)
-    # ax_bar.set_yticks([])
-
-    # # Map to reordered positions
-    # reordered_indices = {inchi: i for i, inchi in enumerate(reordered_matrix.index)}
-
-    # for inchi, name in example_inchi2name.items():
-    #     if inchi in reordered_indices:
-    #         pos = reordered_indices[inchi]
-    #         g.ax_heatmap.text(reordered_matrix.shape[1], pos,
-    #                         '← '+name if name == 'DEHP' else '←',
-    #                         va='center', ha='left',
-    #                         fontsize=24, color='white')
-
-
-    # # Create horizontal bar chart with cluster colors
-    # ax_bar.barh(range(len(mean_activity)), mean_activity, color=row_colors)
-    # # Add annotations for example phthalates on the bar chart
-    # for i, (idx, row) in enumerate(reordered_matrix.iterrows()):
-    #     if idx in example_inchi2name:
-    #         name = example_inchi2name[idx]
-    #         ax_bar.text(mean_activity[i], i, f' {name}', va='center', fontsize=10)
-            
-    # ax_bar.set_ylim(g.ax_heatmap.get_ylim())
-    # ax_bar.set_xlabel('Mean Activity', fontsize=24)
-    # ax_bar.set_yticks([])
-
-    # # Add legend for clusters
-    # legend_elements = [plt.Rectangle((0,0),1,1, facecolor=cluster_colors[i], 
-    #                             label=f'Cluster {i+1}\n(n={np.sum(row_clusters == i)})') for i in range(n_clusters)]
-    # ax_bar.legend(handles=legend_elements, loc='upper right', title='Clusters')
-
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
     # ─── Attach a fresh bar axis ──────────────────────────────────────────
-    divider = make_axes_locatable(g.ax_heatmap)
-    ax_bar = divider.append_axes("right", size="15%", pad=0.8)
+    # divider = make_axes_locatable(g.ax_heatmap)
+    # ax_bar = divider.append_axes("right", size="15%", pad=0.8)
+    divider = g.divider            # reuse the one that already holds the colour-bar
+    ax_bar  = divider.append_axes("right", size="15%", pad=1.0)  # pad > 0.6 keeps some space
 
     # ─── Plot mean activity ──────────────────────────────────────────────
     ax_bar.barh(range(len(mean_activity)), mean_activity, color=row_colors)
@@ -402,27 +298,33 @@ def cluster_rows_and_make_heatmap():
     ]
     ax_bar.legend(
         handles=legend_elements,
-        loc='upper left',
-        bbox_to_anchor=(1.05, 1.0),
+        # loc='upper left',
+        loc='center left',
+        bbox_to_anchor=(1.05, 0.9),
         borderaxespad=0.0,
         title='Clusters',
         fontsize=12
     )
 
+    # ─── Move the y-axis label (“Diester Phthalates”) to the left side ───────────
+    g.ax_heatmap.yaxis.set_label_position('left')
+    g.ax_heatmap.set_ylabel('Diester Phthalates', color='black', fontsize=20, labelpad=35)
+    g.ax_heatmap.yaxis.tick_left()
+    # bump the left margin so the label isn’t cut off
     g.figure.subplots_adjust(
-        left=0.02,   # plenty of space for row colors / dendrogram
-        right=0.9,  # leave room for bar & legend
-        top=0.98,
+        left=0.03,
+        right=0.9,
+        top=1.0,
         bottom=0.06
-    )
+    )    
+    # g.figure.subplots_adjust(
+    #     left=0.02,   # plenty of space for row colors / dendrogram
+    #     right=0.9,  # leave room for bar & legend
+    #     top=0.98,
+    #     bottom=0.06
+    # )
     g.figure.savefig(cachedir / "phthalate_activity_heatmap.png", dpi=600)
     plt.close(g.figure)
-
-    # g.figure.savefig(
-    #     cachedir / "phthalate_activity_heatmap.png",
-    #     dpi=600, bbox_inches='tight'
-    # )
-    # plt.close(g.figure)
 
     assay_activity_counts = phthalate_df.reset_index().groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     assay_activity = assay_activity_counts.groupby('title')['positive_prediction'].mean().reset_index()
@@ -452,6 +354,8 @@ clustered_phthalate_df = cluster_rows_and_make_heatmap()[['uri','title','inchi',
 phthalate_df.to_csv(cachedir / 'phthalate_df.csv', index=False)
 clustered_phthalate_df.to_csv(cachedir / 'clustered_phthalate_df.csv', index=False)
 # endregion
+
+sys.exit(0)  # Exit early to avoid running the rest of the script
 
 # region CHARACTERIZE PRIORITY PHTHALATES ===============================================================
 def plot_phthalate_activity_relationships():
