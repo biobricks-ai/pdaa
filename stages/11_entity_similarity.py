@@ -154,8 +154,8 @@ def build_phthalate_ice_activity_df():
         lambda ct: any(d in ct for d in dart_clean)
     )
 
-    # replace the old ICE‐only line with this:
     ice_assays = uri_title_token[mask]
+    # ice_assays = uri_title_token
     print(f"Found {len(ice_assays)} DART-filtered ICE assays")
 
 

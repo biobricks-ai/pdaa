@@ -21,19 +21,28 @@ MODEL_ID = "gemini-2.5-flash"   # Fast & supports responseSchema
 
 # --- 3. Core helper --------------------------------
 def flag_assay(assay: str) -> int:
+    prompt = f"""
+Analyze the following toxicology assay and determine if it is a primary measure of developmental and reproductive toxicity (DART).
+- Respond with '0' if it measures more general endpoints like cytotoxicity, metabolic disruption, or inflammation, which are not primary DART endpoints.
+- Respond with '1' if it directly assesses endpoints like teratogenicity, reproductive organ function, fertility, or developmental neurotoxicity.
+
+Assay Name: {assay}
+    """
+    # prompt = "Respond with 0 (No) to this question"  # this works, returning 0
     resp = client.models.generate_content(
         model=MODEL_ID,
-        contents=f"Is the assay '{assay}' relevant for endocrine disruption?",
+        contents=prompt,
         # Everything below enforces exact output --------------------------
         config={
-            "response_mime_type": "text/x.enum",
-            "response_schema": YnFlag,   # enum schema with '0' and '1'
-            "temperature": 0,
-            "top_p": 0,
-            "max_output_tokens": 1,
+            # "response_mime_type": "text/x.enum",
+            # "response_schema": YnFlag,   # enum schema with '0' and '1'
+            "temperature": 0.0,
+            "top_p": 0.4,
+            # "max_output_tokens": 1,
         },
     )
-    return int(resp.text.strip())
+    return resp.text.strip()
+    # return int(resp.text.strip())
 
 # --- 4. Batch run ----------------------------------
 if __name__ == "__main__":
