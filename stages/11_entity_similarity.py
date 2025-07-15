@@ -48,7 +48,8 @@ def _styled_heatmap(matrix, row_colors, *, dpi=600,
                        row_cluster=False, col_cluster=True,
                        row_colors=row_colors,
                        xticklabels=False, yticklabels=False,
-                       linecolor=linecolor, linewidths=0.5,
+                       linecolor=linecolor,
+                    #    linewidths=0.5,
                        figsize=(18, 9),
                     #    cbar_pos=(0.91, 0.3, 0.02, 0.4),
                        cbar_pos=(0.95, 0.3, 0.02, 0.4),
@@ -75,8 +76,10 @@ def _styled_heatmap(matrix, row_colors, *, dpi=600,
     g.ax_col_dendrogram.set_visible(False)
 
     # Tighten layout & label axes like Fig 1
-    g.ax_heatmap.set_xlabel('DART Assays', color=fontcolor, fontsize=20)
-    g.ax_heatmap.set_ylabel('Diester Phthalates', color=fontcolor, fontsize=20)
+    # g.ax_heatmap.set_xlabel('DART Assays', color=fontcolor, fontsize=20)
+    g.ax_heatmap.set_xlabel('DART or ED Assays', color=fontcolor, fontsize=20)
+    # g.ax_heatmap.set_ylabel('Diester Phthalates', color=fontcolor, fontsize=20)
+    g.ax_heatmap.set_ylabel('Ortho-Phthalates', color=fontcolor, fontsize=20)
 
     # Label the colorbar
     cbar = g.ax_heatmap.collections[0].colorbar
@@ -169,7 +172,7 @@ def build_phthalate_ice_activity_df():
         # # Convert to a pandas Series to allow logical operations (&, |) with other masks
         # mask = pd.Series(mask, index=uri_title_token.index)
 
-        use_dart = False
+        use_dart = True
         use_ed = True
 
         resource_dir = pathlib.Path('resources')
@@ -255,22 +258,21 @@ def build_phthalate_ice_activity_df():
     print("Converting InChIs to molecules...")
     inchi_mol_df['mol'] = inchi_mol_df['inchi'].progress_apply(lambda x: Chem.MolFromInchi(x))
     df2 = df.merge(inchi_mol_df, on='inchi')
-
-    def is_diester_phthalate(m):
-        diester_phthalate = Chem.MolFromSmarts("[cH][cH]c(C(=O)OC[CH2,CH,C])c(C(=O)OC[CH2,CH,C])[cH][cH]") # 542
-        dp = Chem.AddHs(m).HasSubstructMatch(diester_phthalate)
-        only_coh = all(atom.GetSymbol() in ['C', 'H', 'O'] for atom in m.GetAtoms())
-        only_one_ring = m.GetRingInfo().NumRings() == 1
-        return dp and only_coh and only_one_ring
+    
+    def is_phthalate(m):
+        # to restore functionality of is_diester_phthalate:
+        # - set modes          to ("diester",)
+        # - set check_elements to True
+        return pdaa.is_phthalate(m, modes=("ortho",), check_elements=True)
 
     try:
-        assert all(is_diester_phthalate(m) for m in example_phthalates)
+        assert all(is_phthalate(m) for m in example_phthalates)
     except AssertionError:
         print("Some example phthalates are not diester phthalates. Please check the SMARTS pattern.")
         raise
 
     print("Filtering for diester phthalates...")
-    filtered_phthalates = inchi_mol_df[inchi_mol_df['mol'].progress_apply(is_diester_phthalate)]['inchi']
+    filtered_phthalates = inchi_mol_df[inchi_mol_df['mol'].progress_apply(is_phthalate)]['inchi']
     df3 = df2[df2['inchi'].isin(filtered_phthalates)]
     # Ensure both columns are of the same type (int)
     df3['property_token'] = df3['property_token'].astype(int)
@@ -380,7 +382,11 @@ def cluster_rows_and_make_heatmap():
 
     # ─── Move the y-axis label (“Diester Phthalates”) to the left side ───────────
     g.ax_heatmap.yaxis.set_label_position('left')
-    g.ax_heatmap.set_ylabel('Diester Phthalates', color='black', fontsize=20, labelpad=35)
+    g.ax_heatmap.set_ylabel(
+        # 'Diester Phthalates',
+        'Ortho-Phthalates',
+        color='black', fontsize=20, labelpad=35
+    )
     g.ax_heatmap.yaxis.tick_left()
     # bump the left margin so the label isn’t cut off
     g.figure.subplots_adjust(

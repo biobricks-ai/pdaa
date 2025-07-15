@@ -17,68 +17,7 @@ from tqdm import tqdm
 from rdkit import Chem
 from collections.abc import Iterable
 
-# Central registry of phthalate SMARTS patterns
-SMARTS_PATTERNS = {
-    # Dialkyl/diaryl di-esters of ortho-phthalic acid
-    "diester": "[cH][cH]c(C(=O)OC[CH2,CH,C])c(C(=O)OC[CH2,CH,C])[cH][cH]",
-    # Any 1,2-phthalate (acid, mono-, or di-ester, R = H or any group)
-    "ortho":   "[cH][cH]c(C(=O)O[*])c(C(=O)O[*])[cH][cH]",
-}
-
-# Pre-compile once at import time
-COMPILED_PATTERNS = {k: Chem.MolFromSmarts(v) for k, v in SMARTS_PATTERNS.items()}
-
-def is_phthalate(mol, modes=("any",), check_elements=True, valid_num_rings=[1]):
-    """
-    Return True if *mol* matches any phthalate class named in *modes*.
-
-    Parameters
-    ----------
-    mol : rdkit.Chem.Mol
-    modes : str | Iterable[str]
-        Allowed keys: "diester", "ortho", "any".
-        "any" is equivalent to {"diester", "ortho"}.
-    check_elements : bool
-        If True, check that all atoms are C, H, or O.
-    valid_num_rings : list[int] | None
-        If not None, check that the number of rings in the molecule is in this list.
-
-    Notes
-    -----
-    • Only-C/H/O atoms and exactly one ring are required.
-    • The molecule is H-added internally because the SMARTS use [cH].
-    """
-    # Empty or None?
-    if (mol is None) or (not isinstance(mol, Chem.Mol)):
-        return False
-
-    # Normalize modes -> tuple
-    if isinstance(modes, str) or not isinstance(modes, Iterable):
-        modes = (modes,)
-
-    # Structural guards
-    if check_elements and any(a.GetSymbol() not in ("C", "H", "O") for a in mol.GetAtoms()):
-        return False
-    if (valid_num_rings is not None) and (mol.GetRingInfo().NumRings() not in valid_num_rings):
-        return False
-
-    # Evaluate each pattern once
-    mol_h = Chem.AddHs(mol)
-    matches = {
-        name: mol_h.HasSubstructMatch(pat)
-        for name, pat in COMPILED_PATTERNS.items()
-    }
-    matches["any"] = any(matches.values())
-
-    # Decide by requested modes
-    for key in modes:
-        if key not in matches:
-            raise ValueError(f"Unknown mode: {key!r}")
-        if matches[key]:
-            return True
-    return False
-
-
+from stages.utils.pdaa import is_phthalate
 
 async def async_predict(inchi: str, tok: str, sem: asyncio.Semaphore):
     async with sem:
@@ -140,8 +79,25 @@ top_df = raw_df.sort_values(by='max_similarity', ascending=False)[['inchi', 'max
 inchi_list = [
     inch for inch in top_df['inchi'].unique()
     if (mol := Chem.MolFromInchi(inch)) is not None
-    and is_phthalate(mol, modes=("ortho",), check_elements=False)  # structure filter
+    and is_phthalate(mol, modes=("ortho",), check_elements=True)  # structure filter
 ]
+
+# save the InChIs to a file for later use
+inchi_file = cachedir / 'priority_phthalates_inchi.txt'
+with open(inchi_file, 'w') as f:
+    for inchi in inchi_list:
+        f.write(f"{inchi}\n")
+
+# save the SMILES to a file for later use
+smiles_file = cachedir / 'priority_phthalates_smiles.txt'
+with open(smiles_file, 'w') as f:
+    for inchi in inchi_list:
+        # Find SMILES corresponding to InChI in top_df (or raw_df)
+        smiles = raw_df.loc[raw_df['inchi'] == inchi, 'smiles'].values
+        if len(smiles) > 0:
+            f.write(f"{smiles[0]}\n")
+        else:
+            raise ValueError(f"No SMILES found for InChI: {inchi}")
 
 # BATCH RUN ==============================================================
 def get_missing(inchi_tok_pairs):
