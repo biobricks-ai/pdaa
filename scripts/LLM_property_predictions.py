@@ -5,41 +5,91 @@ for every assay listed in assay_list.txt, using Google Gemini.
 """
 import os, enum
 from google import genai
+from google.genai import types
+from google.genai.types import Tool, GoogleSearch, GenerateContentConfig, Enum
 from pathlib import Path
 from dotenv import load_dotenv
 from tqdm import tqdm
 
 # --- 1. Define the only valid outputs -------------
+# YnFlag = Enum(values=["0", "1"])
 class YnFlag(enum.Enum):
     NO = "0"
     YES = "1"
+
+# reusable search tool object
+GOOGLE_SEARCH = Tool(google_search=GoogleSearch())
 
 # --- 2. Init client --------------------------------
 load_dotenv()  # Load environment variables from .env file
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 MODEL_ID = "gemini-2.5-flash"   # Fast & supports responseSchema
 
+grounding_tool = types.Tool(google_search=types.GoogleSearch())
+BASE_CFG = types.GenerateContentConfig(
+    tools=[grounding_tool],
+    response_schema=YnFlag,
+    # response_mime_type="text/x.enum",
+    temperature=0.0,
+    top_p=0.1,
+    # max_output_tokens=1,
+)
+
 # --- 3. Core helper --------------------------------
 def flag_assay(assay: str) -> int:
-    prompt = f"""
-Analyze the following toxicology assay and determine if it is a primary measure of developmental and reproductive toxicity (DART).
-- Respond with '0' if it measures more general endpoints like cytotoxicity, metabolic disruption, or inflammation, which are not primary DART endpoints.
-- Respond with '1' if it directly assesses endpoints like teratogenicity, reproductive organ function, fertility, or developmental neurotoxicity.
+#     prompt = f"""
+# You are a toxicology expert. Classify this assay as either developmental/reproductive toxicity (DART) relevant or not.
 
-Assay Name: {assay}
-    """
+# DART-relevant (respond '1'): Assays that directly measure:
+# - Embryonic/fetal development
+# - Reproductive organ function
+# - Fertility parameters
+# - Developmental neurotoxicity specific to developing organisms
+
+# NOT DART-relevant (respond '0'): Assays that measure:
+# - General cytotoxicity
+# - Metabolic disruption without developmental context
+# - General inflammation
+# - Adult-specific endpoints
+
+# Assay Name: {assay}
+
+# Response (0 or 1 only):"""
+    prompt = (
+        "You are a toxicology expert. Classify this assay as either "
+        "developmental/reproductive toxicity (DART) relevant or not.\n\n"
+        "DART-relevant (respond '1'): assays that directly measure:\n"
+        "- Embryonic/fetal development\n"
+        "- Reproductive organ function\n"
+        "- Fertility parameters\n"
+        "- Developmental neurotoxicity in developing organisms\n\n"
+        "NOT DART-relevant (respond '0'): assays that measure:\n"
+        "- General cytotoxicity\n"
+        "- Metabolic disruption with no developmental context\n"
+        "- General inflammation\n"
+        "- Adult-only endpoints\n\n"
+        f"Assay Name: {assay}\n\n"
+        "Response (0 or 1 only):"
+    )
     # prompt = "Respond with 0 (No) to this question"  # this works, returning 0
     resp = client.models.generate_content(
         model=MODEL_ID,
         contents=prompt,
-        # Everything below enforces exact output --------------------------
-        config={
-            # "response_mime_type": "text/x.enum",
-            # "response_schema": YnFlag,   # enum schema with '0' and '1'
-            "temperature": 0.0,
-            "top_p": 0.4,
-            # "max_output_tokens": 1,
-        },
+        config=BASE_CFG,
+        # config    = GenerateContentConfig(
+        #     tools           = [GOOGLE_SEARCH],   # search grounding
+        #     response_schema = YnFlag,            # enforces enum
+        #     temperature     = 0.0,
+        #     top_p           = 0.1,
+        #     max_output_tokens = 1,
+        # ),
+        # config={
+        #     "response_mime_type": "text/x.enum",
+        #     "response_schema": YnFlag,   # enum schema with '0' and '1'
+        #     "temperature": 0.0,
+        #     "top_p": 0.1,
+        #     # "max_output_tokens": 1,  # risk of truncation
+        # },
     )
     return resp.text.strip()
     # return int(resp.text.strip())
