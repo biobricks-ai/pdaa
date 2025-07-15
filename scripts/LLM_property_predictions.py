@@ -10,12 +10,17 @@ from google.genai.types import Tool, GoogleSearch, GenerateContentConfig, Enum
 from pathlib import Path
 from dotenv import load_dotenv
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 1. Define the only valid outputs -------------
 # YnFlag = Enum(values=["0", "1"])
 class YnFlag(enum.Enum):
     NO = "0"
     YES = "1"
+
+def process_assay(assay: str):
+    # create a fresh client inside the worker if the SDK isn’t thread-safe
+    return assay, flag_assay(assay)
 
 # reusable search tool object
 GOOGLE_SEARCH = Tool(google_search=GoogleSearch())
@@ -123,8 +128,16 @@ if __name__ == "__main__":
         assays = [ln.strip() for ln in fh if ln.strip()]
 
     results = {}
-    for assay in tqdm(assays, desc="Flagging assays"):
-        results[assay] = flag_assay(assay)
+    max_workers = 16  # Adjust based on your system's capabilities
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(process_assay, a): a for a in assays}
+        for fut in tqdm(as_completed(futures), total=len(assays), desc="Flagging assays"):
+            assay, flag = fut.result()
+            results[assay] = flag
+
+    # for assay in tqdm(assays, desc="Flagging assays"):
+    #     results[assay] = flag_assay(assay)
 
     # save results to a file
     output_file = resource_dir / "assay_flags.txt"
