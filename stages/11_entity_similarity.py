@@ -157,9 +157,74 @@ def build_phthalate_ice_activity_df():
             lambda ct: any(d in ct for d in dart_clean)
         )
     elif mask_method == 'prediction':
+        # def get_toxicity_mask(pred_file : str):
+        #     pred_df = pd.read_csv(pred_file, sep='\t', header=None, names=['title', 'flag'])
+        #     mask = uri_title_token['title'].apply(
+        #         lambda title: any(title.lower().startswith(f.lower()) for f in pred_df['title'].tolist())
+        #     )
+        #     return mask
+        
+        # # Efficiently create a mask of all False values using numpy
+        # mask = np.zeros(len(uri_title_token), dtype=bool)
+        # # Convert to a pandas Series to allow logical operations (&, |) with other masks
+        # mask = pd.Series(mask, index=uri_title_token.index)
+
+        use_dart = False
+        use_ed = True
+
         resource_dir = pathlib.Path('resources')
-        pred_file = resource_dir / 'assay_flags2.txt'
-        pred_df = pd.read_csv(pred_file, sep='\t', header=None, names=['title', 'flag'])
+        # if use_dart:
+        #     dart_file = resource_dir / 'assay_flags2_dart.txt'
+        #     dart_mask = get_toxicity_mask(dart_file)
+        #     mask |= dart_mask
+        # if use_ed:
+        #     ed_file = resource_dir / 'assay_flags2_ed.txt'
+        #     ed_mask = get_toxicity_mask(ed_file)
+        #     mask |= ed_mask
+
+        # print(np.sum(mask), "DART/ED assays found in the database")
+
+        # ----------------------------------------------------------------------
+        # 1. Collect every file we should read this run
+        flag_files = []
+        if use_dart:
+            flag_files.append(resource_dir / "assay_flags2_dart.txt")
+        if use_ed:
+            flag_files.append(resource_dir / "assay_flags2_ed.txt")
+
+        # Nothing selected?  Short-circuit early.
+        if not flag_files:
+            mask = np.zeros(len(uri_title_token), dtype=bool)
+        else:
+            # ------------------------------------------------------------------
+            # 2. Load, filter, and concatenate
+            dfs = [
+                pd.read_csv(p, sep="\t", header=None,
+                            names=["title", "flag"])
+                .loc[lambda d: d["flag"].astype(bool)]      # keep only positives
+                .assign(title=lambda d: d["title"].str.lower().str.strip())
+                for p in flag_files
+            ]
+            
+            combined_titles = (
+                pd.concat(dfs, ignore_index=True)
+                .drop_duplicates("title")                   # OR-semantics (“any” match)
+                ["title"]
+                .tolist()
+            )
+            title_set = set(combined_titles)
+
+            # ------------------------------------------------------------------
+            # 3. Vectorised membership check on the current DataFrame
+            mask = uri_title_token["title"].str.lower().str.strip().isin(title_set)
+
+        print(mask.sum(), "DART/ED assays found")
+
+
+        # pred_df = pd.read_csv(pred_file, sep='\t', header=None, names=['title', 'flag'])
+        # mask = uri_title_token['title'].apply(
+        #     lambda title: any(title.lower().startswith(f.lower()) for f in pred_df['title'].tolist())
+        # )
 
     ice_assays = uri_title_token[mask]
     # ice_assays = uri_title_token
