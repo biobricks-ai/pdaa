@@ -340,16 +340,24 @@ def get_mie_weights(mie_uris, chemical_inchi):
 
 # Central registry of phthalate SMARTS patterns
 SMARTS_PATTERNS = {
-    # Dialkyl/diaryl di-esters of ortho-phthalic acid
-    "diester": "[cH][cH]c(C(=O)OC[CH2,CH,C])c(C(=O)OC[CH2,CH,C])[cH][cH]",
-    # Any 1,2-phthalate (acid, mono-, or di-ester, R = H or any group)
-    "ortho":   "[cH][cH]c(C(=O)O[*])c(C(=O)O[*])[cH][cH]",
+    # Ortho-phthalic acid di-ester
+    "ortho_phthalate": "c1cc(C(=O)O[!H])c(C(=O)O[!H])cc1",
+    # Any ortho acid, mono-, or di-ester; R = H or any group
+    "ortho_any":   "c1cc(C(=O)O[*])c(C(=O)O[*])cc1",
+    # Meta-phthalic acid di-ester (a.k.a., isophthalate)
+    "meta_phthalate": "c1cc(C(=O)O[!H])cc(C(=O)O[!H])c1",
+    # Any meta acid, mono-, or di-ester; R = H or any group
+    "meta_any": "c1cc(C(=O)O[*])cc(C(=O)O[*])c1",
+    # Para-phthalic acid di-ester (a.k.a., terephthalate)
+    "para_phthalate": "c1c(C(=O)O[!H])ccc(C(=O)O[!H])c1",
+    # Any para acid, mono-, or di-ester; R = H or any group
+    "para_any": "c1c(C(=O)O[*])ccc(C(=O)O[*])c1",
 }
 
 # Pre-compile once at import time
 COMPILED_PATTERNS = {k: Chem.MolFromSmarts(v) for k, v in SMARTS_PATTERNS.items()}
 
-def is_phthalate(mol, modes=("any",), check_elements=True, valid_num_rings=[1]):
+def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1]):
     """
     Return True if *mol* matches any phthalate class named in *modes*.
 
@@ -358,7 +366,7 @@ def is_phthalate(mol, modes=("any",), check_elements=True, valid_num_rings=[1]):
     mol : rdkit.Chem.Mol
     modes : str | Iterable[str]
         Allowed keys: "diester", "ortho", "any".
-        "any" is equivalent to {"diester", "ortho"}.
+        "any" returns True if any of the other modes match.
     check_elements : bool
         If True, check that all atoms are C, H, or O.
     valid_num_rings : list[int] | None
