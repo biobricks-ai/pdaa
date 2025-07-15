@@ -132,27 +132,34 @@ def build_phthalate_ice_activity_df():
         .where('?pp <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
         .execute().groupby('uri').first().reset_index()
 
-    dart_path = pathlib.Path('resources/DART_endpoints.txt')
+    mask_method = 'prediction'
 
-    with open(dart_path) as f:
-        # strip whitespace, drop empties, remove punctuation, lowercase
-        dart_clean = [
-            re.sub(r'[^A-Za-z0-9]', '', line).lower()
-            for line in f
-            if line.strip()
-        ]
+    if mask_method == 'list':
+        dart_path = pathlib.Path('resources/DART_endpoints.txt')
 
-    uri_title_token['clean_title'] = (
-        uri_title_token['title']
-        .str.strip()
-        .str.lower()
-        .apply(lambda s: re.sub(r'[^A-Za-z0-9]', '', s))
-    )
+        with open(dart_path) as f:
+            # strip whitespace, drop empties, remove punctuation, lowercase
+            dart_clean = [
+                re.sub(r'[^A-Za-z0-9]', '', line).lower()
+                for line in f
+                if line.strip()
+            ]
 
-    # build a boolean mask: True if any dart_clean entry is a substring
-    mask = uri_title_token['clean_title'].apply(
-        lambda ct: any(d in ct for d in dart_clean)
-    )
+        uri_title_token['clean_title'] = (
+            uri_title_token['title']
+            .str.strip()
+            .str.lower()
+            .apply(lambda s: re.sub(r'[^A-Za-z0-9]', '', s))
+        )
+
+        # build a boolean mask: True if any dart_clean entry is a substring
+        mask = uri_title_token['clean_title'].apply(
+            lambda ct: any(d in ct for d in dart_clean)
+        )
+    elif mask_method == 'prediction':
+        resource_dir = pathlib.Path('resources')
+        pred_file = resource_dir / 'assay_flags2.txt'
+        pred_df = pd.read_csv(pred_file, sep='\t', header=None, names=['title', 'flag'])
 
     ice_assays = uri_title_token[mask]
     # ice_assays = uri_title_token

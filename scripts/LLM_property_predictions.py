@@ -36,7 +36,7 @@ BASE_CFG = types.GenerateContentConfig(
 )
 
 # --- 3. Core helper --------------------------------
-def flag_assay(assay: str) -> int:
+def flag_assay(assay: str, toxicity_type : str = "ed") -> int:
 #     prompt = f"""
 # You are a toxicology expert. Classify this assay as either developmental/reproductive toxicity (DART) relevant or not.
 
@@ -55,23 +55,44 @@ def flag_assay(assay: str) -> int:
 # Assay Name: {assay}
 
 # Response (0 or 1 only):"""
-    prompt = (
-        "You are a toxicology expert. Classify this assay as either "
-        "developmental/reproductive toxicity (DART) relevant or not.\n\n"
-        "DART-relevant (respond '1'): assays that directly measure:\n"
-        "- Embryonic/fetal development\n"
-        "- Reproductive organ function\n"
-        "- Fertility parameters\n"
-        "- Developmental neurotoxicity in developing organisms\n\n"
-        "NOT DART-relevant (respond '0'): assays that measure:\n"
-        "- General cytotoxicity\n"
-        "- Metabolic disruption with no developmental context\n"
-        "- General inflammation\n"
-        "- Adult-only endpoints\n\n"
-        f"Assay Name: {assay}\n\n"
-        "Response (0 or 1 only):"
-    )
-    # prompt = "Respond with 0 (No) to this question"  # this works, returning 0
+    if toxicity_type == "dart":
+        prompt = (
+            "You are a toxicology expert. Classify this assay as either "
+            "developmental/reproductive toxicity (DART) relevant or not.\n\n"
+            "DART-relevant (respond '1'): assays that directly measure:\n"
+            "- Embryonic/fetal development\n"
+            "- Reproductive organ function\n"
+            "- Fertility parameters\n"
+            "- Developmental neurotoxicity in developing organisms\n\n"
+            "NOT DART-relevant (respond '0'): assays that measure:\n"
+            "- General cytotoxicity\n"
+            "- Metabolic disruption with no developmental context\n"
+            "- General inflammation\n"
+            "- Adult-only endpoints\n\n"
+            f"Assay Name: {assay}\n\n"
+            "Response (0 or 1 only):"
+        )
+    elif toxicity_type == "ed":
+        prompt = (
+            "You are a toxicology expert. Classify this assay as either "
+            "endocrine disruption (ED) relevant or not.\n\n"
+            "ED-relevant (respond '1'): assays that directly measure:\n"
+            "- Estrogen, androgen, progesterone, or thyroid receptor binding/activation\n"
+            "- Steroidogenesis or aromatase activity (e.g., alterations in testosterone, estradiol)\n"
+            "- Hormone-regulated gene/protein expression (e.g., vitellogenin induction, uterotrophic response)\n"
+            "- Developmental or reproductive endpoints mediated by endocrine pathways "
+            "   (e.g., altered sex ratio, secondary sexual characteristics, thyroid histopathology)\n"
+            "- Endocrine-axis hormone or biomarker levels in vivo (e.g., circulating T3/T4, LH/FSH)\n\n"
+            "NOT ED-relevant (respond '0'): assays that measure:\n"
+            "- General cytotoxicity or cell viability with no hormonal context\n"
+            "- Mitochondrial dysfunction or metabolic stress unrelated to endocrine pathways\n"
+            "- Generic inflammatory or immune responses without hormonal mediation\n"
+            "- Adult-organ toxicity unlinked to endocrine mechanisms (e.g., hepatotoxicity, nephrotoxicity)\n"
+            "- Non-specific oxidative stress, DNA damage, or genotoxicity endpoints\n\n"
+            f"Assay Name: {assay}\n\n"
+            "Response (0 or 1 only):"
+        )
+
     resp = client.models.generate_content(
         model=MODEL_ID,
         contents=prompt,
