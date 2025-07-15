@@ -79,7 +79,7 @@ top_df = raw_df.sort_values(by='max_similarity', ascending=False)[['inchi', 'max
 inchi_list = [
     inch for inch in top_df['inchi'].unique()
     if (mol := Chem.MolFromInchi(inch)) is not None
-    and is_phthalate(mol, modes=("ortho",), check_elements=True)  # structure filter
+    and is_phthalate(mol, modes=("ortho_phthalate",), check_elements=True)  # structure filter
 ]
 
 # save the InChIs to a file for later use

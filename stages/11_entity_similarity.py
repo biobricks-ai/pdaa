@@ -260,10 +260,7 @@ def build_phthalate_ice_activity_df():
     df2 = df.merge(inchi_mol_df, on='inchi')
     
     def is_phthalate(m):
-        # to restore functionality of is_diester_phthalate:
-        # - set modes          to ("diester",)
-        # - set check_elements to True
-        return pdaa.is_phthalate(m, modes=("ortho",), check_elements=True)
+        return pdaa.is_phthalate(m, modes=("ortho_phthalate",), check_elements=True)
 
     try:
         assert all(is_phthalate(m) for m in example_phthalates)
