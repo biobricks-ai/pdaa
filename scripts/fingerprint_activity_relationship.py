@@ -2,7 +2,7 @@ import argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from rdkit import Chem, DataStructs
+from rdkit import DataStructs
 from rdkit.Chem import AllChem
 
 def get_activity_matrix(cachedir: str | Path) -> pd.DataFrame:
@@ -60,7 +60,7 @@ if __name__ == "__main__":
         activity_array /= np.linalg.norm(activity_array, axis=1, keepdims=True)
 
     # Convert the 'title' column to RDKit Mol objects
-    mol_list = [Chem.MolFromInchi(s) for s in activity_matrix.index]
+    mol_list = [AllChem.MolFromInchi(s) for s in activity_matrix.index]
 
     # Get the Morgan fingerprints for each molecule
     MorganGenerator = AllChem.GetMorganGenerator(radius=2, fpSize=1024)

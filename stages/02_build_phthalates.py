@@ -1,3 +1,4 @@
+import sys
 import pathlib
 import shutil
 from pyspark.sql import SparkSession
@@ -6,6 +7,8 @@ from concurrent.futures import ProcessPoolExecutor
 import pandas as pd
 from rdkit import Chem
 from tqdm import tqdm
+sys.path.append('./')
+from stages.utils.pdaa import is_phthalate
 
 # TODO start moving bricks to iceberg and do this in cloud. 
 
@@ -46,14 +49,25 @@ temp_phthalates = tempdir / 'temp_phthalates'
 shutil.rmtree(temp_phthalates, ignore_errors=True) 
 temp_phthalates.mkdir(exist_ok=True)
 
-def has_substructure(smiles, substructure):
-    if pd.isna(smiles):  # Check for NaN/NA values
+# def has_substructure(smiles, substructure):
+#     if pd.isna(smiles):  # Check for NaN/NA values
+#         return False
+#     try:
+#         mol = Chem.MolFromSmiles(smiles)
+#         return bool(mol.HasSubstructMatch(substructure)) if mol else False
+#     except:
+#         return False
+
+def smiles_is_phthalate(smiles):
+    """Check if a SMILES string corresponds to a phthalate."""
+    mol = Chem.MolFromSmiles(smiles)
+    if not mol:
         return False
-    try:
-        mol = Chem.MolFromSmiles(smiles)
-        return bool(mol.HasSubstructMatch(substructure)) if mol else False
-    except:
-        return False
+    return is_phthalate(
+        mol,
+        modes=("ortho_phthalate", "meta_phthalate", "para_phthalate"),
+        check_elements=True
+    )
 
 # process each file from partitioned zinc 
 # output to `temp_phthalates`
@@ -63,10 +77,12 @@ def process_file_with_index(index_parquet_file_tuple):
 
     try:
         df = pd.read_parquet(parquet_file)
-        substructure = Chem.MolFromSmiles('OC(=O)C1=CC=CC=C1C(=O)O')
+        # substructure = Chem.MolFromSmiles('OC(=O)C1=CC=CC=C1C(=O)O')
 
         # Filter for phthalates
-        df['phthalate'] = df['smiles'].apply(lambda x: has_substructure(x, substructure))
+        df['phthalate'] = df['smiles'].apply(
+            lambda x: smiles_is_phthalate(x)
+        )
         phthalates_df = df[df['phthalate'] == True]  # Explicit boolean comparison
         
         # Save intermediate results if we found any phthalates
