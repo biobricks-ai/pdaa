@@ -72,24 +72,24 @@ with sqlite3.connect(bb.assets('chemprop-transformer').cvae_sqlite) as con:
     property_tokens = sorted(list(set(property_tokens)))
 
 # LOAD ZINC PHTALATES DATA =====================================================
-# raw_df = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')
-raw_df = pd.read_parquet('cache/priority_phthalates/priority_phthalates.parquet')
-top_df = raw_df.sort_values(by='max_similarity', ascending=False)[['inchi', 'max_similarity']].drop_duplicates()
+raw_df = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')
+# raw_df = pd.read_parquet('cache/priority_phthalates/priority_phthalates.parquet')
+# top_df = raw_df.sort_values(by='max_similarity', ascending=False)[['inchi', 'max_similarity']].drop_duplicates()
 # inchi_list = top_df['inchi'].unique().tolist()
 inchi_list = [
-    inch for inch in top_df['inchi'].unique()
+    inch for inch in raw_df['inchi'].unique()
     if (mol := Chem.MolFromInchi(inch)) is not None
-    and is_phthalate(mol, modes=("para_phthalate",), check_elements=True)  # structure filter
+    and is_phthalate(mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate",), check_elements=True)  # structure filter
 ]
 
 # save the InChIs to a file for later use
-inchi_file = cachedir / 'priority_phthalates_inchi.txt'
+inchi_file = cachedir / 'phthalates_inchi.txt'
 with open(inchi_file, 'w') as f:
     for inchi in inchi_list:
         f.write(f"{inchi}\n")
 
 # save the SMILES to a file for later use
-smiles_file = cachedir / 'priority_phthalates_smiles.txt'
+smiles_file = cachedir / 'phthalates_smiles.txt'
 with open(smiles_file, 'w') as f:
     for inchi in inchi_list:
         # Find SMILES corresponding to InChI in top_df (or raw_df)

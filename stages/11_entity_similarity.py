@@ -42,7 +42,7 @@ def _styled_heatmap(matrix, row_colors, *, dpi=600,
     """
     # Cluster only columns; we already ordered rows
     g = sns.clustermap(matrix,
-                       square=True,       # ← force equal-sized cells
+                    #    square=True,       # ← force equal-sized cells
                        cbar_kws={'drawedges': False},  # disable seaborn’s built-in bar
                        cmap='viridis',
                        row_cluster=False, col_cluster=True,
@@ -280,6 +280,7 @@ def build_phthalate_ice_activity_df():
             # raise ValueError(
             #     f"Multiple phthalate structures matched for {Chem.MolToSmiles(m)}: {match_array}"
             # )
+            return False
             return True
         elif sum(match_array) == 0:
             return False
@@ -306,7 +307,7 @@ def build_phthalate_ice_activity_df():
     df3 = df2[df2['inchi'].isin(filtered_phthalates)]
     # Ensure both columns are of the same type (int)
     df3.loc[:, 'property_token'] = df3['property_token'].astype(int)
-    ice_assays['token'] = ice_assays['token'].astype(int)
+    ice_assays.loc[:, 'token'] = ice_assays['token'].astype(int)
     df3 = df3.merge(ice_assays, left_on='property_token', right_on='token')[['uri','title','inchi','mol','positive_prediction']]
     print(f"Final dataset contains {len(df3)} rows")
     return df3
@@ -388,29 +389,40 @@ def cluster_rows_and_make_heatmap():
     # row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
     # Instead, color based on ortho, iso, or tere phthalate
     
-    row_colors = []
-    # n_non_ortho = 0
-    for inchi in reordered_matrix.index:
-        if (mol := Chem.MolFromInchi(inchi)) is None:
-            continue  # skip invalid InChIs
-        match_list = [pdaa.is_phthalate(mol, modes=(structure,)) for structure in structures_list]
-        row_colors.append(
-            structure_colors[tuple(match_list)]
-        )
+    # color_by = 'structure'
+    color_by = 'cluster'
 
-        # for i in range(len(structures_list)):
-        #     if pdaa.is_phthalate(mol, modes=(structures_list[i],)):
-        #         row_colors.append(structure_colors[i])
-        #         if i > 0:
-        #             n_non_ortho += 1
-        #             # print(f"non-ortho phthalate: {Chem.MolToSmiles(mol)} ({structures_list[i]})")
-        #             # # save image of the molecule
-        #             # img = Draw.MolToImage(mol, size=(300, 300))
-        #             # img.save("mol.png")
-        #             # raise ValueError("Testing: non-ortho phthalate detected")
-        #         break
-    # keep the single colour-bar that _styled_heatmap makes
-    # print(f"Number of non-ortho phthalates: {n_non_ortho}")
+    if color_by == 'structure':
+        structure_matches = np.array([0 for _ in structures_list])
+        row_colors = []
+        # n_non_ortho = 0
+        for inchi in reordered_matrix.index:
+            if (mol := Chem.MolFromInchi(inchi)) is None:
+                continue  # skip invalid InChIs
+            match_list = [pdaa.is_phthalate(mol, modes=(structure,)) for structure in structures_list]
+            structure_matches += match_list
+            row_colors.append(
+                structure_colors[tuple(match_list)]
+            )
+
+            # for i in range(len(structures_list)):
+            #     if pdaa.is_phthalate(mol, modes=(structures_list[i],)):
+            #         row_colors.append(structure_colors[i])
+            #         if i > 0:
+            #             n_non_ortho += 1
+            #             # print(f"non-ortho phthalate: {Chem.MolToSmiles(mol)} ({structures_list[i]})")
+            #             # # save image of the molecule
+            #             # img = Draw.MolToImage(mol, size=(300, 300))
+            #             # img.save("mol.png")
+            #             # raise ValueError("Testing: non-ortho phthalate detected")
+            #         break
+        # keep the single colour-bar that _styled_heatmap makes
+        # print(f"Number of non-ortho phthalates: {n_non_ortho}")
+        print("Structure matches found:")
+        print(structure_matches)
+    elif color_by == 'cluster':
+        # Use the cluster colors instead
+        row_colors = [base_colors[row_clusters[i]] for i in cluster_order]
     g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black')
 
     from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -422,7 +434,11 @@ def cluster_rows_and_make_heatmap():
     ax_bar  = divider.append_axes("right", size="15%", pad=1.0)  # pad > 0.6 keeps some space
 
     # ─── Plot mean activity ──────────────────────────────────────────────
-    cluster_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Darker Blue, Darker Red, Darker Green
+    if color_by == 'structure':
+        cluster_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Darker Blue, Darker Red, Darker Green
+    elif color_by == 'cluster':
+        # Use the same colors as the clusters
+        cluster_colors = base_colors
     bar_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
     ax_bar.barh(range(len(mean_activity)), mean_activity, color=bar_colors)
 
@@ -430,7 +446,7 @@ def cluster_rows_and_make_heatmap():
     for inchi, name in example_inchi2name.items():
         pos = reordered_indices.get(inchi)
         if pos is not None:
-            ax_bar.text(mean_activity[pos], pos,
+            ax_bar.text(mean_activity.iloc[pos], pos,
                         f' {name}',
                         va='center', fontsize=10, color='black')
 
@@ -449,9 +465,9 @@ def cluster_rows_and_make_heatmap():
     ]
     ax_bar.legend(
         handles=legend_elements,
-        # loc='upper left',
-        loc='center left',
-        bbox_to_anchor=(1.05, 0.9),
+        loc='upper left',
+        # loc='center left',
+        bbox_to_anchor=(1.05, 1.0),
         borderaxespad=0.0,
         title='Clusters',
         fontsize=12
@@ -460,10 +476,10 @@ def cluster_rows_and_make_heatmap():
     # ─── Move the y-axis label (“Diester Phthalates”) to the left side ───────────
     g.ax_heatmap.yaxis.set_label_position('left')
     g.ax_heatmap.set_ylabel(
-        # 'Diester Phthalates',
+        'Diester Phthalates',
         # 'Ortho-Phthalates',
         # 'Terephthalates',
-        'Isophthalates',
+        # 'Isophthalates',
         color='black', fontsize=20, labelpad=35
     )
     g.ax_heatmap.yaxis.tick_left()

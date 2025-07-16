@@ -2,7 +2,9 @@
 # deps = [ cache/ ]
 # outs = [ cache/priority_phthalates/priority_phthalates.parquet ]
 import rdkit, rdkit.Chem, rdkit.Chem.AllChem, rdkit.DataStructs, rdkit.Chem.rdFingerprintGenerator
-import boltons.funcutils, pandas as pd, pathlib
+# import boltons.funcutils
+import pandas as pd
+import pathlib
 from functools import lru_cache
 from tqdm import tqdm
 tqdm.pandas()

@@ -403,6 +403,75 @@ def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1
     for key in modes:
         if key not in matches:
             raise ValueError(f"Unknown mode: {key!r}")
-        if matches[key]:
+        if matches[key]:  # return True at first match
             return True
     return False
+
+
+def longest_carbon_backbone(mol: Chem.Mol) -> int:
+    """
+    Given an RDKit Mol that is already known to be a phthalate, return
+    the number of carbon atoms in the longest un-branched alkyl segment
+    (the “backbone”) of its ester side-chains.
+
+    Strategy
+    --------
+    1.  Locate each ester linkage with the SMARTS pattern 'C(=O)O'.
+        - Index 0 is the carbonyl carbon.
+        - Index 2 is the single-bonded oxygen that connects to the side-chain.
+    2.  For each of those oxygens, identify the first carbon in the side-chain
+        (the oxygen's neighbour that is not the carbonyl carbon).
+    3.  Depth-first search outward **only through carbon atoms** to find the
+        maximum path length.  At every branch we explore all possibilities
+        and keep the longest.
+    4.  Track the maximum over both ester arms and return it.
+
+    The function ignores non-carbon atoms and avoids cycles by passing a
+    `prev_idx` argument during recursion.
+
+    Parameters
+    ----------
+    mol : rdkit.Chem.Mol
+        Molecule already validated as a phthalate.
+
+    Returns
+    -------
+    int
+        Length of the longest linear carbon segment (backbone).
+    """
+    def _dfs(atom, visited = set()) -> int:
+        """Depth-first search returning longest carbon chain length from `atom`."""
+        if atom.GetIdx() not in visited:
+            visited.add(atom.GetIdx())
+
+        max_len = 0
+        for nbr in atom.GetNeighbors():
+            if (nbr.GetIdx() in visited) or nbr.GetSymbol() != 'C':
+                continue
+            branch_len = _dfs(nbr, atom.GetIdx())
+            max_len = max(max_len, branch_len)
+
+        # if all neighbors for atom checked, remove it from visited
+        visited.remove(atom.GetIdx())
+        return 1 + max_len  # count this carbon
+
+    ester_pattern = Chem.MolFromSmarts('C(=O)O')
+    longest = 0
+
+    for match in mol.GetSubstructMatches(ester_pattern):
+        carbonyl_c_idx, _, single_o_idx = match
+        single_o = mol.GetAtomWithIdx(single_o_idx)
+
+        # Identify the first carbon in the side-chain (O-C).
+        side_c = next(
+            (nbr for nbr in single_o.GetNeighbors()
+             if nbr.GetIdx() != carbonyl_c_idx and nbr.GetSymbol() == 'C'),
+            None
+        )
+        if side_c is None:
+            continue  # malformed ester; skip
+
+        chain_len = _dfs(side_c, single_o_idx)
+        longest = max(longest, chain_len)
+
+    return longest
