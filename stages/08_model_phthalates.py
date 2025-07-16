@@ -79,7 +79,7 @@ raw_df = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')
 inchi_list = [
     inch for inch in raw_df['inchi'].unique()
     if (mol := Chem.MolFromInchi(inch)) is not None
-    and is_phthalate(mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate",), check_elements=True)  # structure filter
+    and is_phthalate(mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate",), check_elements=True)  # isomer filter
 ]
 
 # save the InChIs to a file for later use

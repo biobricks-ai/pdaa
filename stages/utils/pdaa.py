@@ -448,7 +448,7 @@ def longest_carbon_backbone(mol: Chem.Mol) -> int:
         for nbr in atom.GetNeighbors():
             if (nbr.GetIdx() in visited) or nbr.GetSymbol() != 'C':
                 continue
-            branch_len = _dfs(nbr, atom.GetIdx())
+            branch_len = _dfs(nbr, visited)
             max_len = max(max_len, branch_len)
 
         # if all neighbors for atom checked, remove it from visited
@@ -471,7 +471,7 @@ def longest_carbon_backbone(mol: Chem.Mol) -> int:
         if side_c is None:
             continue  # malformed ester; skip
 
-        chain_len = _dfs(side_c, single_o_idx)
+        chain_len = _dfs(side_c, {single_o_idx})
         longest = max(longest, chain_len)
 
     return longest

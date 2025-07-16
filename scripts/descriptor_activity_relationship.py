@@ -2,9 +2,9 @@ import argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from rdkit import DataStructs
 from rdkit.Chem import AllChem, Descriptors, Descriptors3D
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+from tqdm import tqdm
 
 import sys
 sys.path.append('./')
@@ -38,15 +38,15 @@ def classify_isomer(mol: AllChem.Mol) -> int:
 def get_descriptors(mol):
     """Calculate descriptors for a given molecule."""
     feats = {
-        'MolWt'            : Descriptors.MolWt(mol),
+        # 'MolWt'            : Descriptors.MolWt(mol),
         'cLogP'            : Descriptors.MolLogP(mol),
         'TPSA'             : Descriptors.TPSA(mol),
         'RotB'             : Descriptors.NumRotatableBonds(mol),
-        'MolMR'            : Descriptors.MolMR(mol),
+        # 'MolMR'            : Descriptors.MolMR(mol),
         'Fsp3'             : Descriptors.FractionCSP3(mol),
         'Kappa1'           : Descriptors.Kappa1(mol),
-        'Kappa2'           : Descriptors.Kappa2(mol),
-        'Kappa3'           : Descriptors.Kappa3(mol),
+        # 'Kappa2'           : Descriptors.Kappa2(mol),
+        # 'Kappa3'           : Descriptors.Kappa3(mol),
         'LongestCarbonBackbone': longest_carbon_backbone(mol),
     }
     # 3-D shape (needs conformer)
@@ -77,7 +77,7 @@ def compute_vifs(X: pd.DataFrame, *, add_intercept: bool = False) -> pd.DataFram
         Columns are descriptors, rows are compounds (already z-scaled is ideal).
     add_intercept : bool, default False
         - If True, appends a constant column before computing VIFs.
-        - Most chem-descriptor sets don’t need the intercept; set to True only
+        - Most chem-descriptor sets don't need the intercept; set to True only
           if you plan to include one in later regression models.
 
     Returns
@@ -117,6 +117,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process activity matrix for entity similarity.")
     parser.add_argument('--cachedir', type=str, default='cache/entity_similarity',
                         help='Directory to cache the activity matrix.')
+    parser.add_argument('--outdir', type=str, default='cache/descriptors',
+                        help='Directory to cache the descriptors.')
     # parser.add_argument('--normalize', action='store_true',
     #                     help='Normalize the activity matrix.')
     # parser.add_argument('--z_score', action='store_true',
@@ -124,6 +126,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cachedir = Path(args.cachedir)
+    outdir   = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
     activity_df = get_activity_df(cachedir)
 
     # # Convert the DataFrame to a NumPy array
@@ -142,23 +146,46 @@ if __name__ == "__main__":
     #     activity_array /= np.linalg.norm(activity_array, axis=1, keepdims=True)
 
     # Convert the 'title' column to RDKit Mol objects
-    mol_list = [AllChem.MolFromInchi(s) for s in activity_df.index]
-    descriptor_vectors = [get_descriptors(mol) for mol in mol_list]
-    descriptor_df = pd.DataFrame(descriptor_vectors, index=mol_list)
-    descriptor_matrix = descriptor_df.to_numpy()
+    mol_list = [AllChem.AddHs(AllChem.MolFromInchi(s)) for s in tqdm(activity_df.index, desc="Converting InChIs to RDKit Mol objects")]
+
+    # Calculate descriptors for each molecule
+    descriptor_parquet = outdir / 'descriptors.parquet'
+    if descriptor_parquet.exists():
+        print(f"Loading existing descriptors from {descriptor_parquet}")
+        descriptor_df = pd.read_parquet(descriptor_parquet)
+    else:
+        descriptor_vectors = [get_descriptors(mol) for mol in tqdm(mol_list, desc="Calculating descriptors")]
+        descriptor_df = pd.DataFrame(descriptor_vectors, index=activity_df.index)
+        descriptor_df.to_parquet(descriptor_parquet)
+
+    # descriptor_matrix = descriptor_df.to_numpy()
+    # manually dropping descriptors with high VIFs
+    descriptor_df = descriptor_df.drop(columns=[
+        'MolWt', 'MolMR', 'Kappa2', 'Kappa3',
+    ])
 
     # Data preprocessing
-    X = z_scale_df(descriptor_matrix)
+    X = z_scale_df(descriptor_df)
     Y = z_scale_df(activity_df)
 
     # Compute variance inflation factors (VIFs) to check for multicollinearity
     vif_table = compute_vifs(X)
+    print("VIF Table:")
+    print(vif_table)
 
     # Quick Pearson/Spearman heat-map
-    rho = X.corrwith(Y, method='spearman')  # p × d matrix
+    # rho = X.corrwith(
+    #     Y,
+    #     # axis = 1,
+    #     method='spearman'
+    # )  # p × d matrix
+    xy   = pd.concat([X, Y], axis=1)                 # same index, side-by-side
+    rho  = xy.corr(method='spearman')                # full (p+d) × (p+d) matrix
+    rho  = rho.loc[X.columns, Y.columns]             # slice to p × d block
+    print("rho (Spearman correlation):")
+    print(rho)
     # correct p-values → q-values (Benjamini–Hochberg)
     
-    # TODO: remove highly correlated descriptors based on VIFs
     for descriptor in vif_table['descriptor']:
         if vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0] > 10:
             print(f"Warning: High VIF detected for descriptor '{descriptor}' (VIF={vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0]}). Consider removing it.")
@@ -168,9 +195,9 @@ if __name__ == "__main__":
     rf = RandomForestRegressor(n_estimators=500, oob_score=True, n_jobs=-1)
     rf.fit(X, Y)
     print(f"Random Forest OOB Score: {rf.oob_score_}")
-    explainer = shap.TreeExplainer(rf)
-    shap_values = explainer.shap_values(X)
-    shap.summary_plot(shap_values, X, plot_type="bar", max_display=20)
+    # explainer = shap.TreeExplainer(rf)
+    # shap_values = explainer.shap_values(X)
+    # shap.summary_plot(shap_values, X, plot_type="bar", max_display=20)
     # TODO: random forest regression for nonlinear relationships 
     # TODO: summarize the results in a report or visualization
 
