@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import pdist
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, to_hex, to_rgba
 from matplotlib import cm
 
 import re
@@ -79,7 +79,8 @@ def _styled_heatmap(matrix, row_colors, *, dpi=600,
     # g.ax_heatmap.set_xlabel('DART Assays', color=fontcolor, fontsize=20)
     g.ax_heatmap.set_xlabel('DART or ED Assays', color=fontcolor, fontsize=20)
     # g.ax_heatmap.set_ylabel('Diester Phthalates', color=fontcolor, fontsize=20)
-    g.ax_heatmap.set_ylabel('Ortho-Phthalates', color=fontcolor, fontsize=20)
+    # g.ax_heatmap.set_ylabel('Ortho-Phthalates', color=fontcolor, fontsize=20)
+    # g.ax_heatmap.set_ylabel('Terephthalates', color=fontcolor, fontsize=20)
 
     # Label the colorbar
     cbar = g.ax_heatmap.collections[0].colorbar
@@ -120,6 +121,9 @@ for name, weight in zip(example_names, example_weights):
 
 # run the model on the example phthalates
 _ = pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
+
+# possible structures to look for
+structures_list = ["ortho_phthalate", "meta_phthalate", "para_phthalate"]
 
 # which phthalate has the lowest mean ICE activity?
 # region ICE ACTIVITY ===============================================================
@@ -258,21 +262,50 @@ def build_phthalate_ice_activity_df():
     print("Converting InChIs to molecules...")
     inchi_mol_df['mol'] = inchi_mol_df['inchi'].progress_apply(lambda x: Chem.MolFromInchi(x))
     df2 = df.merge(inchi_mol_df, on='inchi')
-    
+
     def is_phthalate(m):
-        return pdaa.is_phthalate(m, modes=("ortho_phthalate",), check_elements=True)
+        match_array = []
+        for structure in structures_list:
+            if pdaa.is_phthalate(m, modes=(structure,), check_elements=True):
+                # return True
+                match_array.append(True)
+            else:
+                match_array.append(False)
+
+        if sum(match_array) > 1:
+            # # draw the molecule
+            # img = Draw.MolToImage(m, size=(300, 300))
+            # # save the image
+            # img.save('mol.png')
+            # raise ValueError(
+            #     f"Multiple phthalate structures matched for {Chem.MolToSmiles(m)}: {match_array}"
+            # )
+            return True
+        elif sum(match_array) == 0:
+            return False
+        else:
+            # raise ValueError(f"Testing: single phthalate structure match for {Chem.MolToSmiles(m)}")
+            return True
+        # return pdaa.is_phthalate(m, modes=("meta_phthalate",), check_elements=True)
+    
+    # def is_phthalate(m):
+    #     for structure in structures_list:
+    #         if pdaa.is_phthalate(m, modes=(structure,), check_elements=True):
+    #             return True
+    #     return False
+    #     # return pdaa.is_phthalate(m, modes=("meta_phthalate",), check_elements=True)
 
     try:
         assert all(is_phthalate(m) for m in example_phthalates)
     except AssertionError:
         print("Some example phthalates are not diester phthalates. Please check the SMARTS pattern.")
-        raise
+        # raise
 
     print("Filtering for diester phthalates...")
     filtered_phthalates = inchi_mol_df[inchi_mol_df['mol'].progress_apply(is_phthalate)]['inchi']
     df3 = df2[df2['inchi'].isin(filtered_phthalates)]
     # Ensure both columns are of the same type (int)
-    df3['property_token'] = df3['property_token'].astype(int)
+    df3.loc[:, 'property_token'] = df3['property_token'].astype(int)
     ice_assays['token'] = ice_assays['token'].astype(int)
     df3 = df3.merge(ice_assays, left_on='property_token', right_on='token')[['uri','title','inchi','mol','positive_prediction']]
     print(f"Final dataset contains {len(df3)} rows")
@@ -299,6 +332,8 @@ def cluster_rows_and_make_heatmap():
 
     # Fill any NaN values with 0 for clustering
     activity_matrix_filled = activity_matrix.fillna(0)
+    # save the filled activitiy matrix
+    activity_matrix_filled.to_parquet(cachedir / 'activity_matrix_filled.parquet')
 
     # Apply KMeans clustering
     n_clusters = 3
@@ -314,7 +349,7 @@ def cluster_rows_and_make_heatmap():
     cluster_order = []
     for i in range(n_clusters):
         cluster_indices = np.where(row_clusters == i)[0]
-        sorted_indices = cluster_indices[np.argsort(mean_activities[cluster_indices])]
+        sorted_indices = cluster_indices[np.argsort(mean_activities.iloc[cluster_indices])]
         cluster_order.extend(sorted_indices)
 
     # Reorder the matrix
@@ -329,12 +364,53 @@ def cluster_rows_and_make_heatmap():
     mean_activity = reordered_matrix.mean(axis=1)
 
     # Define specific colors for each cluster
-    cluster_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Blue, Red, Green
-    row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
+    # structure_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Blue, Red, Green
+    base_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Blue, Red, Green
+    # base_rgba = [tuple(int(c * 255) for c in plt.colors.to_rgba(color)) for color in base_colors]
+    base_rgba = [np.array(to_rgba(color)) for color in base_colors]
+    def mix_colors(colors_bool_list):
+        """
+        Mix colors based on a boolean list.
+        """
+        if not any(colors_bool_list):
+            return '#000000'  # Return black if no colors are selected
+        return to_hex(
+            sum(
+                [base_rgba[i] for i in range(len(base_rgba)) if colors_bool_list[i]]
+            )/sum(colors_bool_list)
+        )
+    structure_colors = {
+        (i, j, k) : mix_colors([i, j, k])
+        for i in [True, False]
+        for j in [True, False]
+        for k in [True, False]
+    }
+    # row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
+    # Instead, color based on ortho, iso, or tere phthalate
+    
+    row_colors = []
+    # n_non_ortho = 0
+    for inchi in reordered_matrix.index:
+        if (mol := Chem.MolFromInchi(inchi)) is None:
+            continue  # skip invalid InChIs
+        match_list = [pdaa.is_phthalate(mol, modes=(structure,)) for structure in structures_list]
+        row_colors.append(
+            structure_colors[tuple(match_list)]
+        )
 
-
-    row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
+        # for i in range(len(structures_list)):
+        #     if pdaa.is_phthalate(mol, modes=(structures_list[i],)):
+        #         row_colors.append(structure_colors[i])
+        #         if i > 0:
+        #             n_non_ortho += 1
+        #             # print(f"non-ortho phthalate: {Chem.MolToSmiles(mol)} ({structures_list[i]})")
+        #             # # save image of the molecule
+        #             # img = Draw.MolToImage(mol, size=(300, 300))
+        #             # img.save("mol.png")
+        #             # raise ValueError("Testing: non-ortho phthalate detected")
+        #         break
     # keep the single colour-bar that _styled_heatmap makes
+    # print(f"Number of non-ortho phthalates: {n_non_ortho}")
     g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black')
 
     from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -346,7 +422,9 @@ def cluster_rows_and_make_heatmap():
     ax_bar  = divider.append_axes("right", size="15%", pad=1.0)  # pad > 0.6 keeps some space
 
     # ─── Plot mean activity ──────────────────────────────────────────────
-    ax_bar.barh(range(len(mean_activity)), mean_activity, color=row_colors)
+    cluster_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Darker Blue, Darker Red, Darker Green
+    bar_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
+    ax_bar.barh(range(len(mean_activity)), mean_activity, color=bar_colors)
 
     # ─── Annotate the example phthalates ────────────────────────────────
     for inchi, name in example_inchi2name.items():
@@ -362,6 +440,8 @@ def cluster_rows_and_make_heatmap():
     ax_bar.set_yticks([])
 
     # ─── Cluster legend ─────────────────────────────────────────────────
+    # Use three related but darker colors for cluster identification (to distinguish from structure_colors)
+    
     legend_elements = [
         plt.Rectangle((0,0),1,1, facecolor=cluster_colors[i],
                       label=f'Cluster {i+1}\n(n={np.sum(row_clusters==i)})')
@@ -381,7 +461,9 @@ def cluster_rows_and_make_heatmap():
     g.ax_heatmap.yaxis.set_label_position('left')
     g.ax_heatmap.set_ylabel(
         # 'Diester Phthalates',
-        'Ortho-Phthalates',
+        # 'Ortho-Phthalates',
+        # 'Terephthalates',
+        'Isophthalates',
         color='black', fontsize=20, labelpad=35
     )
     g.ax_heatmap.yaxis.tick_left()
