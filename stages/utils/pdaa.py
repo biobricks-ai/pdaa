@@ -341,15 +341,15 @@ def get_mie_weights(mie_uris, chemical_inchi):
 # Central registry of phthalate SMARTS patterns
 SMARTS_PATTERNS = {
     # Ortho-phthalic acid di-ester
-    "ortho_phthalate": "c1cc(C(=O)O[!H])c(C(=O)O[!H])cc1",
+    "ortho_phthalate": "c1cc(C(=O)[O;H0])c(C(=O)[O;H0])cc1",
     # Any ortho acid, mono-, or di-ester; R = H or any group
     "ortho_any":   "c1cc(C(=O)O[*])c(C(=O)O[*])cc1",
     # Meta-phthalic acid di-ester (a.k.a., isophthalate)
-    "meta_phthalate": "c1cc(C(=O)O[!H])cc(C(=O)O[!H])c1",
+    "meta_phthalate": "c1cc(C(=O)[O;H0])cc(C(=O)[O;H0])c1",
     # Any meta acid, mono-, or di-ester; R = H or any group
     "meta_any": "c1cc(C(=O)O[*])cc(C(=O)O[*])c1",
     # Para-phthalic acid di-ester (a.k.a., terephthalate)
-    "para_phthalate": "c1c(C(=O)O[!H])ccc(C(=O)O[!H])c1",
+    "para_phthalate": "c1c(C(=O)[O;H0])ccc(C(=O)[O;H0])c1",
     # Any para acid, mono-, or di-ester; R = H or any group
     "para_any": "c1c(C(=O)O[*])ccc(C(=O)O[*])c1",
 }
