@@ -6,6 +6,7 @@ import seaborn as sns
 from pathlib import Path
 from rdkit.Chem import AllChem, Descriptors, Descriptors3D
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+from skmisc.loess import loess               # pip install scikit-misc
 from tqdm import tqdm
 
 import sys
@@ -163,9 +164,6 @@ def Pearson_correlation_heatmap(X: pd.DataFrame, Y: pd.DataFrame, draw_heatmap: 
     xy   = pd.concat([X, Y], axis=1)                 # same index, side-by-side
     rho  = xy.corr(method='spearman')                # full (p+d) × (p+d) matrix
     rho  = rho.loc[X.columns, Y.columns]             # slice to p × d block
-    # correct p-values → q-values (Benjamini–Hochberg)
-    # print("rho (Spearman correlation):")
-    # print(rho)
 
     # get the norm of earch row (descriptor)
     descriptor_norm = np.linalg.norm(rho, axis=1)
@@ -348,8 +346,12 @@ def plot_activity_boxplot_lcb_isomer(
         .dropna(subset=['LongestCarbonBackbone', 'Isomer'])
     )
 
-    # keep only LCB ≤ lcb_max
-    df = df[df['LongestCarbonBackbone'] <= lcb_max]
+    # # keep only LCB ≤ lcb_max
+    # df = df[df['LongestCarbonBackbone'] <= lcb_max]
+    # cap any LCBs beyond lcb_max at a single overflow bin (e.g. 7)
+    overflow_val = lcb_max + 1          # 7 when lcb_max == 6
+    df.loc[df['LongestCarbonBackbone'] > lcb_max, 'LongestCarbonBackbone'] = overflow_val
+
     # keep only LCB ≥ lcb_min
     df = df[df['LongestCarbonBackbone'] >= lcb_min]
 
@@ -358,6 +360,8 @@ def plot_activity_boxplot_lcb_isomer(
     df['Isomer'] = df['Isomer'].astype(int)
 
     lcb_order    = sorted(df['LongestCarbonBackbone'].unique())  # 1 … lcb_max
+    tick_labels = [str(x) if x <= lcb_max else f"{x}+" for x in lcb_order]
+
     isomer_order = [0, 1, 2]                                     # ortho, iso, tere
     isomer_labels = {0: 'ortho', 1: 'iso', 2: 'tere'}
 
@@ -406,6 +410,8 @@ def plot_activity_boxplot_lcb_isomer(
     ax.set_ylabel("Mean Activity Value")
     # ax.set_title("Mean Activity by LCB and Isomer (≤ C6)")
 
+    ax.set_xticklabels(tick_labels)
+
     # Replace legend labels with human-friendly isomer names
     handles, labels = ax.get_legend_handles_labels()
     labels = [isomer_labels[int(lbl)] for lbl in labels]
@@ -441,6 +447,77 @@ def show_C0_mols(descriptor_df: pd.DataFrame):
             fname = f"{inchi.replace('/', '_')}.png"
             img.save(img_path / fname)
 
+def loess_ci(x, y, span=0.3, x_grid=None, level=0.95):
+    x_grid = np.linspace(x.min(), x.max(), 200) if x_grid is None else x_grid
+    model   = loess(x, y, span=span, degree=1)
+    model.fit()
+    pred    = model.predict(x_grid, stderror=True)
+    # conf    = pred.confidence(level=level)
+    conf    = pred.confidence(alpha=1 - level)
+    return x_grid, pred.values, conf.lower, conf.upper
+
+def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFrame):
+    """
+    Plot the activity features against the descriptors.
+
+    Parameters
+    ----------
+    descriptor_df : pd.DataFrame
+        DataFrame containing descriptors.
+    activity_df : pd.DataFrame
+        DataFrame containing activities.
+    """
+    # key_descriptors = [
+    #     'MolWt', 'cLogP', 'RotB',
+    #     'LongestCarbonBackbone', 'BranchingRatio'
+    # ]
+    key_descriptors = [
+        'Rgyr', 
+        'RotB', 'BranchingRatio', 'Fsp3',
+        'Kappa1', 'TPSA', 
+    ]
+    # is_discrete = [False, False, True, True, False]  # whether the descriptor is discrete
+
+    # Create a figure with subplots for each descriptor
+    fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(15, 10))
+    axes = axes.flatten()
+    Y = activity_df.mean(axis=1)  # mean activity across all assays
+    for i, descriptor in enumerate(key_descriptors):
+        ax = axes[i]
+        x = descriptor_df[descriptor]
+        sns.regplot(
+            x=x,
+            y=Y,
+            # lowess=True,
+            # robust=True,
+            fit_reg=False,
+            # ci=95,
+            scatter_kws={'alpha': 0.5, 'edgecolors': 'white'},
+            # line_kws={'color': 'black', 'lw': 2},
+            ax=ax
+        )
+        xg, curve, lo, hi = loess_ci(x.values, Y.values, span=0.5)
+        ax.fill_between(xg, lo, hi, color='grey', alpha=0.25, zorder=1)
+        ax.plot(xg, curve, color="black", lw=2, zorder=2)
+
+        # # Plot each activity against the descriptor
+        # for activity in activity_df.columns:
+            # ax.scatter(
+            #     descriptor_df[descriptor],
+            #     activity_df[activity],
+            #     # label=activity,
+            #     alpha=0.5
+            # )
+        
+        # ax.set_title(f"Activity vs. {descriptor}")
+        ax.set_xlabel(descriptor)
+        ax.set_ylabel("Activity")
+
+    # Remove any empty subplots
+    for j in range(len(key_descriptors), len(axes)):
+        fig.delaxes(axes[j])
+    plt.show()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process activity matrix for entity similarity.")
@@ -450,6 +527,8 @@ if __name__ == "__main__":
                         help='Directory to cache the descriptors.')
     parser.add_argument('--heatmap', action='store_true',
                         help='Draw a heatmap of the descriptor vs activity correlation.')
+    parser.add_argument('--lcb_plots', action='store_true',
+                        help='Plot the activity vs. longest carbon backbone (LCB) and isomer type.')
     # parser.add_argument('--normalize', action='store_true',
     #                     help='Normalize the activity matrix.')
     # parser.add_argument('--z_score', action='store_true',
@@ -489,20 +568,23 @@ if __name__ == "__main__":
         descriptor_df = pd.DataFrame(descriptor_vectors, index=activity_df.index)
         descriptor_df.to_parquet(descriptor_parquet)
 
-    # manually dropping descriptors with high VIFs
-    # descriptor_df = descriptor_df.drop(columns=[
-    #     'MolWt',
-    #     'MolMR',
-    #     'Kappa2',
-    #     'Kappa3',
-    #     'cLogP',
-    # ])
+    plot_activity_features(descriptor_df, activity_df)
 
-    # plot the trend with longest carbon backbone
-    # plot_activity_scatter_lcb(descriptor_df, activity_df)
-    plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df)
-    plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df, lcb_max=100, lcb_min=7)
-    # show_C0_mols(descriptor_df)
+    # manually dropping descriptors with high VIFs
+    descriptor_df = descriptor_df.drop(columns=[
+        'MolWt',
+        'MolMR',
+        'Kappa2',
+        'Kappa3',
+        'cLogP',
+    ])
+
+    if args.lcb_plots:
+        # plot the trend with longest carbon backbone
+        # plot_activity_scatter_lcb(descriptor_df, activity_df)
+        plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df)
+        # plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df, lcb_max=100, lcb_min=7)
+        # show_C0_mols(descriptor_df)
 
     # Data preprocessing
     X = z_scale_df(descriptor_df)
@@ -518,8 +600,6 @@ if __name__ == "__main__":
         if vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0] > 10:
             print(f"Warning: High VIF detected for descriptor '{descriptor}' (VIF={vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0]}). Consider removing it.")
 
-    quit()
-
     # Quick Pearson/Spearman heat-map
     rho = Pearson_correlation_heatmap(X, Y, draw_heatmap=args.heatmap)
 
@@ -529,7 +609,7 @@ if __name__ == "__main__":
     isomer_row.to_csv(outdir / 'isomer_correlation.csv')
 
     # TODO: PLS regression to find the most predictive descriptors
-    # rf = get_oob_score(X, Y)
+    rf = get_oob_score(X, Y)
     
     # explainer = shap.TreeExplainer(rf)
     # import shap
