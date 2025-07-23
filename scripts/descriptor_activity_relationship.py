@@ -8,6 +8,7 @@ from rdkit.Chem import AllChem, Descriptors, Descriptors3D
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from skmisc.loess import loess               # pip install scikit-misc
 from tqdm import tqdm
+import statsmodels.api as sm
 
 import sys
 sys.path.append('./')
@@ -309,6 +310,7 @@ def plot_activity_boxplot_lcb_isomer(
         point_jitter: float = 0.15,
         point_kwargs: dict | None = None,
         do_stat_tests: bool = False,
+        outdir: Path,
     ) -> plt.Axes:
     """
     Draw a grouped boxplot of mean activity values.
@@ -427,7 +429,7 @@ def plot_activity_boxplot_lcb_isomer(
         )
         axdict['p'].set_title("Dunn-Holm pairwise comparisons")
         axdict['p'].set_ylabel("") ; axdict['p'].set_xlabel("")
-        # plt.savefig(fig_path / "Dunn_Holm.png")
+        # plt.savefig(outdir / "Dunn_Holm.png")
         # plt.show()
 
         effect = np.full(p_mat.shape, np.nan)
@@ -450,7 +452,7 @@ def plot_activity_boxplot_lcb_isomer(
             ax=axdict['delta'],
         )
         axdict['delta'].set_title("Effect-size matrix (Cliff's δ)")
-        # plt.savefig(fig_path / "Cliffs.png")
+        # plt.savefig(outdir / "Cliffs.png")
         # plt.show()
 
 
@@ -530,7 +532,7 @@ def plot_activity_boxplot_lcb_isomer(
             ax.text(-0.05, 1.05, lab, transform=ax.transAxes,      # just outside upper-left
                     fontsize=14, fontweight='bold', va='top', ha='right')
 
-        plt.savefig(fig_path / "combined_lcb_binary.png")
+        plt.savefig(outdir / "combined_lcb_binary.png")
 
         ax = axdict
 
@@ -571,7 +573,7 @@ def loess_ci(x, y, span=0.3, x_grid=None, level=0.95):
     conf    = pred.confidence(alpha=1 - level)
     return x_grid, pred.values, conf.lower, conf.upper
 
-def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFrame):
+def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFrame, *, linear_model = None, outdir: Path):
     """
     Plot the activity features against the descriptors.
 
@@ -586,11 +588,18 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
     #     'MolWt', 'cLogP', 'RotB',
     #     'LongestCarbonBackbone', 'BranchingRatio'
     # ]
-    key_descriptors = [
-        'Rgyr', 
-        'RotB', 'BranchingRatio', 'Fsp3',
-        'Kappa1', 'TPSA', 
-    ]
+    if linear_model is None:
+        key_descriptors = [
+            'Rgyr', 'RotB', 'BranchingRatio',
+            'Fsp3', 'Kappa1', 'TPSA',
+            'MolWt', 'cLogP', 'Isomer',
+        ]
+    else:
+        key_descriptors = [
+            'Rgyr', 'RotB', 'BranchingRatio',
+            'Fsp3', 'LinearModel', 'Kappa1',
+            'MolWt', 'cLogP', 'Isomer',
+        ]
     descriptors_to_labels = {
         'MolWt': 'Molecular Weight [g/mol]',
         'cLogP': 'cLogP',
@@ -605,30 +614,66 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
         'BranchingRatio': 'Branching Ratio',
         'Isomer': 'Isomer Type (0=ortho, 1=iso, 2=tere)',
         'Rgyr': 'Radius of Gyration [Å]',
+        'LinearModel': 'Linear Model Prediction',
     }
     # is_discrete = [False, False, True, True, False]  # whether the descriptor is discrete
 
     # Create a figure with subplots for each descriptor
-    fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(15, 10))
+    # fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(15, 10))
+    fig, axes = plt.subplots(nrows=3, ncols=3, figsize=(15, 15))
     axes = axes.flatten()
     Y = activity_df.mean(axis=1)  # mean activity across all assays
     for i, descriptor in enumerate(key_descriptors):
         ax = axes[i]
         x = descriptor_df[descriptor]
-        sns.regplot(
-            x=x,
-            y=Y,
-            # lowess=True,
-            # robust=True,
-            fit_reg=False,
-            # ci=95,
-            scatter_kws={'alpha': 0.5, 'edgecolors': 'white'},
-            # line_kws={'color': 'black', 'lw': 2},
-            ax=ax
-        )
-        xg, curve, lo, hi = loess_ci(x.values, Y.values, span=0.5)
-        ax.fill_between(xg, lo, hi, color='grey', alpha=0.25, zorder=1)
-        ax.plot(xg, curve, color="black", lw=2, zorder=2)
+        if descriptor in ['LinearModel', 'Isomer']:
+            if descriptor == 'LinearModel':
+                sns.regplot(
+                    x=x,
+                    y=Y,
+                    fit_reg=True,
+                    ci=95,
+                    scatter_kws={
+                        'alpha': 0.5,
+                        'edgecolors': 'white',
+                        'color': 'green'
+                    },
+                    line_kws={'color': 'black', 'lw': 2},                    
+                    ax=ax
+                )
+                # Set xtick steps to 0.05
+                import matplotlib.ticker as mticker
+                ax.xaxis.set_major_locator(mticker.MultipleLocator(0.05))
+            else:
+                sns.regplot(
+                    x=x,
+                    y=Y,
+                    fit_reg=True,
+                    ci=95,
+                    scatter_kws={
+                        'alpha': 0.5,
+                        'edgecolors': 'white',
+                    },
+                    line_kws={'color': 'black', 'lw': 2},
+                    ax=ax
+                )
+            
+        else:
+            sns.regplot(
+                x=x,
+                y=Y,
+                # lowess=True,
+                # robust=True,
+                fit_reg=False,
+                # ci=95,
+                scatter_kws={'alpha': 0.5, 'edgecolors': 'white'},
+                # line_kws={'color': 'black', 'lw': 2},
+                ax=ax
+            )
+            xg, curve, lo, hi = loess_ci(x.values, Y.values, span=0.5)
+            ax.fill_between(xg, lo, hi, color='grey', alpha=0.25, zorder=1)
+            ax.plot(xg, curve, color="black", lw=2, zorder=2)
+        
 
         # limit the x-axis range to exclude outliers
         Q1 = x.quantile(0.25)
@@ -661,6 +706,8 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
     # Remove any empty subplots
     for j in range(len(key_descriptors), len(axes)):
         fig.delaxes(axes[j])
+
+    plt.savefig(outdir / "activity_by_descriptors_CI.png")
     plt.show()
 
 def get_linear_model(X: pd.DataFrame, Y: pd.DataFrame):
@@ -686,7 +733,7 @@ def get_linear_model(X: pd.DataFrame, Y: pd.DataFrame):
     # model = LinearRegression()
     # model.fit(X, Y)
     # return model
-    import statsmodels.api as sm
+    
     # from sklearn.metrics import r2_score
 
     y_mean = Y.mean(axis=1)
@@ -794,6 +841,141 @@ def PCA_plot(
 
     return ax
 
+def styled_heatmap(matrix, *,
+    dpi=600,
+    fontcolor='black',
+    linecolor='black',
+    show_dendro=False,
+    row_group_size: int = 1,
+    outdir: Path,
+):
+    """
+    Wrapper around seaborn.clustermap with the same visual
+    tweaks used in build_heatmap.py (_generate_heatmap).
+    - matrix: rows = phthalates, cols = ICE assays
+    - row_group_size: int, number of contiguous rows to average together (default 1)
+    """
+    # --- Per-row or grouped-row mean activity bar chart -----------------
+    from scipy.special import softmax
+    row_means = matrix.mean(axis=1)
+    matrix['row_means'] = row_means
+    matrix.sort_values(by='row_means', inplace=True, ascending=False)
+    # Cluster only columns; we already ordered rows
+    g = sns.clustermap(
+        matrix,
+        # square=True,       # ← force equal-sized cells
+        cbar_kws={'drawedges': False},  # disable seaborn’s built-in bar
+        cmap='viridis',
+        row_cluster=False, col_cluster=True,
+        xticklabels=False, yticklabels=False,
+        linecolor=linecolor,
+        # linewidths=0.5,
+        figsize=(18, 9),
+        cbar_pos=(0.95, 0.3, 0.02, 0.4),
+        dendrogram_ratio=(0.10, 0.05),
+        tree_kws={'linewidths': 0.5}
+    )
+    # Remove any stray colorbar
+    if hasattr(g, 'cax') and g.cax:
+        g.cax.remove()
+
+    # Create a new colorbar on its own axes
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    divider = make_axes_locatable(g.ax_heatmap)
+
+    # Determine group centers, heights, and averaged values
+    if row_group_size > 1:
+        centers, heights, values = [], [], []
+        n_rows = len(matrix)
+        for start in range(0, n_rows, row_group_size):
+            end = min(start + row_group_size, n_rows)
+            group_len = end - start
+            centers.append(start + group_len / 2)          # center of the group
+            heights.append(group_len)                      # bar spans the group
+            values.append(matrix['row_means'].iloc[start:end].mean())
+    else:
+        centers  = np.arange(len(matrix)) + 0.5
+        heights  = 1.0
+        values   = matrix['row_means'].values
+
+    bar_ax = divider.append_axes("right", size="6%", pad=0.2, sharey=g.ax_heatmap)
+    # Normalize values to [0, 1] for colormap mapping
+    norm = plt.Normalize(vmin=0, vmax=1)
+    cmap = plt.get_cmap('viridis')
+    bar_colors = cmap(norm(values))
+
+    bar_ax.barh(
+        centers,
+        values,
+        height=heights,
+        color=bar_colors,
+        edgecolor='none',
+        align='center'
+    )
+    bar_ax.set_ylim(g.ax_heatmap.get_ylim())       # lock vertical span
+
+    # Add ticks and tick labels
+    bar_ax.set_yticks(centers)
+    bar_ax.set_yticklabels(matrix.index, fontsize=10)
+    bar_ax.tick_params(axis='y', length=0)
+    # --------------------------------------------------------------------
+
+
+    # # --- Per-row mean activity bar chart -------------------------------
+    # row_means = matrix.mean(axis=1)
+    # # Share the y-axis so bars line up perfectly with heat-map rows
+    # bar_ax = divider.append_axes("right", size="6%", pad=0.2, sharey=g.ax_heatmap)
+    # bar_ax.barh(np.arange(len(row_means)) + 0.5,   # center on each row
+    #             row_means.values,
+    #             height=1.0,
+    #             # color='darkgray',
+    #             color='black',
+    #             # edgecolor=linecolor,
+    #             edgecolor='none',
+    #             align='center')
+    # bar_ax.set_ylim(g.ax_heatmap.get_ylim())       # lock vertical span
+
+    # bar_ax.set_xticks([])
+    bar_ax.set_yticks([])
+    bar_ax.set_xlabel('MAV', fontsize=14)
+    # -------------------------------------------------------------------
+
+    cax = divider.append_axes("right", size="2%", pad=0.6)
+
+    # expose the divider so callers can add more axes without destroying the layout
+    g.divider = divider
+    sm  = plt.cm.ScalarMappable(
+        cmap='viridis',
+        norm=plt.Normalize(
+            vmin=0,
+            vmax=1,
+        )
+    )
+    sm.set_array([])
+    cb = g.figure.colorbar(sm, cax=cax)
+    cb.set_label('Activity Score', fontsize=18, labelpad=10)
+    cb.ax.tick_params(labelsize=14)
+
+    # Hide col dendrogram but keep clustering
+    g.ax_row_dendrogram.set_visible(show_dendro)
+    g.ax_col_dendrogram.set_visible(show_dendro)
+
+    g.ax_heatmap.set_xlabel('DART or ED Assays', color=fontcolor, fontsize=20)
+    g.ax_heatmap.set_ylabel('Diester Phthalates', color=fontcolor, fontsize=20)
+    if not show_dendro:  # no room on the left
+        g.ax_heatmap.yaxis.set_label_position('left')
+
+    # Label the colorbar
+    cbar = g.ax_heatmap.collections[0].colorbar
+    cbar.set_label('Activity Score', fontsize=20, labelpad=10)
+
+    # Tidy up margins so nothing is clipped
+    g.figure.subplots_adjust(left=0.05, right=0.90, top=0.95, bottom=0.05)
+
+    plt.savefig(outdir / 'activity_matrix_heatmap.png', dpi=dpi, bbox_inches='tight')
+
+    return g  # caller can add arrows, bars, etc.
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process activity matrix for entity similarity.")
     parser.add_argument('--cachedir', type=str, default='cache/entity_similarity',
@@ -808,6 +990,10 @@ if __name__ == "__main__":
                         help='Plot the activity vs. longest carbon backbone (LCB) and isomer type.')
     parser.add_argument('--linear_plot', action='store_true',
                         help='Plot the linear regression model of descriptors vs. activity.')
+    parser.add_argument('--no_linear_descriptor', action='store_true',
+                        help='Do not use the linear regression model as a descriptor.')
+    parser.add_argument('--cluster_heatmap', action='store_true',
+                        help='Plot the hierarchical clustered heatmap for compounds and assays.')
     # parser.add_argument('--normalize', action='store_true',
     #                     help='Normalize the activity matrix.')
     # parser.add_argument('--z_score', action='store_true',
@@ -819,43 +1005,10 @@ if __name__ == "__main__":
     outdir.mkdir(parents=True, exist_ok=True)
     activity_df = get_activity_df(cachedir)
 
-    # Seaborn heatmap of the activity matrix
-    g = sns.clustermap(
-        activity_df,
-        cmap='viridis',
-        cbar_kws={
-            'label': 'Activity Value',
-            # 'shrink': 0.8, 'aspect': 30, 'pad': 0.08
-        },
-        cbar_pos=(0.90, 0.25, 0.02, 0.5),
-        yticklabels=False,
-        xticklabels=False,
-        figsize=(15, 15),
-    )
-    # Set x/y labels for the heatmap axis, not the colorbar
-    g.ax_heatmap.set_xlabel('Assays', fontsize=20)
-    g.ax_heatmap.set_ylabel('Compounds', fontsize=20)
-    g.figure.subplots_adjust(top=0.95, right=0.80)
-    # g.figure.suptitle('Activity Matrix Heat-map', y=0.97, fontsize=22)
-    # plt.tight_layout()
-    plt.savefig(outdir / 'activity_matrix_heatmap.png', dpi=300, bbox_inches='tight')
-    plt.show()
+    if args.cluster_heatmap:
+        g = styled_heatmap(activity_df, outdir=outdir, row_group_size = 1)        
+        plt.show()
     quit()
-
-    # # Convert the DataFrame to a NumPy array
-    # activity_array = activity_df.to_numpy()
-
-    # # subtract the mean by column
-    # activity_array -= np.mean(activity_array, axis=0)
-    # # optionally calculate z-scores of the activity matrix by column
-    # if args.z_score:
-    #     activity_array = activity_array/np.std(activity_array, axis=0)
-    #     if args.normalize:
-    #         # give a warning that only one of normalize or z-score should be used
-    #         print("Warning: Both --normalize and --z_score are set. Only z-score will be applied.")
-    # optionally normalize the activity matrix by row
-    # elif args.normalize:
-    #     activity_array /= np.linalg.norm(activity_array, axis=1, keepdims=True)
 
     # Convert the 'title' column to RDKit Mol objects
     mol_list = [AllChem.AddHs(AllChem.MolFromInchi(s)) for s in tqdm(activity_df.index, desc="Converting InChIs to RDKit Mol objects")]
@@ -870,14 +1023,8 @@ if __name__ == "__main__":
         descriptor_df = pd.DataFrame(descriptor_vectors, index=activity_df.index)
         descriptor_df.to_parquet(descriptor_parquet)
 
-    if args.descriptor_plots:
-        # Plot the activity features against the descriptors
-        # This will create a scatter plot for each descriptor against the mean activity
-        # and a LOESS curve to show the trend.
-        print("Plotting activity features against descriptors...")
-        plot_activity_features(descriptor_df, activity_df)
-
     # manually dropping descriptors with high VIFs
+    descriptor_df_cp = descriptor_df.copy()
     descriptor_df = descriptor_df.drop(columns=[
         'MolWt',
         'MolMR',
@@ -889,8 +1036,8 @@ if __name__ == "__main__":
     if args.lcb_plots:
         # plot the trend with longest carbon backbone
         # plot_activity_scatter_lcb(descriptor_df, activity_df)
-        plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df)
-        plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df, lcb_min=6, lcb_max=5, do_stat_tests=True)
+        plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df, outdir=outdir)
+        plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df, lcb_min=6, lcb_max=5, outdir=outdir, do_stat_tests=True)
         # plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df, lcb_max=100, lcb_min=7)
         # show_C0_mols(descriptor_df)
 
@@ -910,6 +1057,19 @@ if __name__ == "__main__":
     # Fit a linear regression model to the data
     # ols, marginal_r2 = get_linear_model(X, Y)
     ols = get_linear_model(X, Y)
+
+    if args.descriptor_plots:
+        # Plot the activity features against the descriptors
+        # This will create a scatter plot for each descriptor against the mean activity
+        # and a LOESS curve to show the trend.
+        print("Plotting activity features against descriptors...")
+        if args.no_linear_descriptor:
+            plot_activity_features(descriptor_df_cp, activity_df, linear_model=None, outdir=outdir)
+        else:
+            y_mean = activity_df.mean(axis=1)  # mean activity across all assays
+            # add linear model predictions as a new descriptor, unscaled
+            descriptor_df_cp['LinearModel'] = ols.predict(sm.add_constant(X))*y_mean.std() + y_mean.mean() 
+            plot_activity_features(descriptor_df_cp, activity_df, linear_model=ols, outdir=outdir)
 
     if args.linear_plot:
         # Plot the linear regression model
