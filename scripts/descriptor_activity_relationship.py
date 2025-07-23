@@ -13,6 +13,7 @@ import statsmodels.api as sm
 import sys
 sys.path.append('./')
 from stages.utils.pdaa import is_phthalate, longest_carbon_backbone
+from scripts.utils.helpers import get_activity_df
 
 # savepath for figures
 fig_path = Path('cache/descriptors')
@@ -91,17 +92,6 @@ def get_descriptors(mol):
     # custom: side-chain length & branching (sketch)
     feats['Isomer'] = classify_isomer(mol)  # 0=ortho,1=iso,2=tere
     return feats
-
-def get_activity_df(cachedir: str | Path) -> pd.DataFrame:
-    """Load the activity matrix from a parquet file."""
-    # Define the path to the parquet file
-    cachedir = Path('cache/entity_similarity')
-    activity_df_path = cachedir / 'activity_matrix_filled.parquet'
-
-    # Load the activity matrix from the parquet file
-    activity_df = pd.read_parquet(activity_df_path)
-
-    return activity_df
 
 def compute_vifs(X: pd.DataFrame, *, add_intercept: bool = False) -> pd.DataFrame:
     """
