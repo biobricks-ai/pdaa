@@ -13,6 +13,9 @@ import sys
 sys.path.append('./')
 from stages.utils.pdaa import is_phthalate, longest_carbon_backbone
 
+# savepath for figures
+fig_path = Path('cache/descriptors')
+
 def z_scale_df(df: pd.DataFrame) -> pd.DataFrame:
     """Z-score normalize the dataframe by columns."""
     # mean = np.mean(matrix, axis=0)
@@ -384,6 +387,15 @@ def plot_activity_boxplot_lcb_isomer(
     if do_stat_tests:
         from scipy.stats import kruskal
         import scikit_posthocs as sp
+        # import pingouin as pg
+        from cliffs_delta import cliffs_delta
+
+        fig, axdict = plt.subplot_mosaic(
+            [['box', 'box'],             # top row: the boxplot spans both columns
+            ['p',   'delta']],          # bottom row: Dunn–Holm | Cliff’s Δ
+            figsize=(12, 10),            # tweak size as you like
+            constrained_layout=True     # auto-tight layout
+        )
 
         df['group'] = df['LongestCarbonBackbone'].apply(get_tick_label) + "_" + df['Isomer'].apply(group_isomer)
         groups = [d["mean_activity"].values for _, d in df.groupby("group")]
@@ -398,14 +410,48 @@ def plot_activity_boxplot_lcb_isomer(
             group_col="group",
             p_adjust="holm"
         )
-        p_mat.index = group_labels; p_mat.columns = group_labels   # nice ordering
+        # p_mat.index = group_labels; p_mat.columns = group_labels   # nice ordering
+        order = sorted(p_mat.index, key=lambda s: (s.startswith('5'), s))
+        p_mat = p_mat.loc[order, order]
 
+        mask = np.triu(np.ones_like(p_mat, dtype=bool))   # show lower triangle only
         sns.heatmap(
-            p_mat, annot=True, fmt=".2g", cmap="viridis_r", cbar_kws={"label": "p (adj)"},
+            p_mat,
+            mask=mask,
+            annot=True,
+            fmt=".2g",
+            cmap="viridis_r",
+            cbar_kws={"label": "p (adj)"},
             vmin=0, vmax=1,
+            ax=axdict['p'],
         )
-        plt.title("Dunn-Holm adjusted p-values")
-        plt.show()
+        axdict['p'].set_title("Dunn-Holm pairwise comparisons")
+        axdict['p'].set_ylabel("") ; axdict['p'].set_xlabel("")
+        # plt.savefig(fig_path / "Dunn_Holm.png")
+        # plt.show()
+
+        effect = np.full(p_mat.shape, np.nan)
+        for i, gi in enumerate(group_labels):
+            for j, gj in enumerate(group_labels):
+                if i < j:
+                    # d = pg.cliffs_delta(
+                    d, _ = cliffs_delta(
+                        df.loc[df.group==gi, "mean_activity"],
+                        df.loc[df.group==gj, "mean_activity"],
+                        # eftype="cliffs"
+                    )
+                    effect[i, j] = effect[j, i] = d
+
+        eff_df = pd.DataFrame(effect, index=order, columns=order)
+        mask = np.triu(np.ones_like(eff_df, dtype=bool))   # hide upper triangle
+        sns.heatmap(
+            eff_df, mask=mask, annot=True, fmt=".2f", cmap="coolwarm", center=0,
+            cbar_kws={"label": "Cliff's δ"},
+            ax=axdict['delta'],
+        )
+        axdict['delta'].set_title("Effect-size matrix (Cliff's δ)")
+        # plt.savefig(fig_path / "Cliffs.png")
+        # plt.show()
 
 
     lcb_order    = sorted(df['LongestCarbonBackbone'].unique())  # 1 … lcb_max
@@ -418,8 +464,10 @@ def plot_activity_boxplot_lcb_isomer(
     # ------------------------------------------------------------
     # 2. Create the plot
     # ------------------------------------------------------------
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(14, 6), dpi=120)
+    if do_stat_tests:
+        ax = axdict['box']
+    else:
+        _, ax = plt.subplots(figsize=(14, 6), dpi=120)
 
     # seaborn handles grouped boxplots in one line
     sns.boxplot(
@@ -468,7 +516,24 @@ def plot_activity_boxplot_lcb_isomer(
     ax.legend(handles, labels, title="Isomer", frameon=False)
 
     ax.spines[['top', 'right']].set_visible(False)
-    plt.tight_layout()
+    # plt.tight_layout()
+
+    if do_stat_tests:
+        fig_labels = {
+            'box'  : 'A)',   # top span
+            'p'    : 'B)',   # Dunn–Holm heat-map
+            'delta': 'C)'    # Cliff’s Δ heat-map
+        }
+
+        for key, lab in fig_labels.items():
+            ax = axdict[key]
+            ax.text(-0.05, 1.05, lab, transform=ax.transAxes,      # just outside upper-left
+                    fontsize=14, fontweight='bold', va='top', ha='right')
+
+        plt.savefig(fig_path / "combined_lcb_binary.png")
+
+        ax = axdict
+
     plt.show()
     return ax
 
@@ -753,6 +818,29 @@ if __name__ == "__main__":
     outdir   = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     activity_df = get_activity_df(cachedir)
+
+    # Seaborn heatmap of the activity matrix
+    g = sns.clustermap(
+        activity_df,
+        cmap='viridis',
+        cbar_kws={
+            'label': 'Activity Value',
+            # 'shrink': 0.8, 'aspect': 30, 'pad': 0.08
+        },
+        cbar_pos=(0.90, 0.25, 0.02, 0.5),
+        yticklabels=False,
+        xticklabels=False,
+        figsize=(15, 15),
+    )
+    # Set x/y labels for the heatmap axis, not the colorbar
+    g.ax_heatmap.set_xlabel('Assays', fontsize=20)
+    g.ax_heatmap.set_ylabel('Compounds', fontsize=20)
+    g.figure.subplots_adjust(top=0.95, right=0.80)
+    # g.figure.suptitle('Activity Matrix Heat-map', y=0.97, fontsize=22)
+    # plt.tight_layout()
+    plt.savefig(outdir / 'activity_matrix_heatmap.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    quit()
 
     # # Convert the DataFrame to a NumPy array
     # activity_array = activity_df.to_numpy()
