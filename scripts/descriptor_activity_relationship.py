@@ -197,7 +197,7 @@ def Pearson_correlation_heatmap(X: pd.DataFrame, Y: pd.DataFrame, draw_heatmap: 
         # # colour bar
         # fig.colorbar(cax, ax=ax, label="Spearman ρ")
 
-        # ax.set_title("Descriptor-vs-Assay Correlation Heatmap")
+        # ax.set_title("Descriptor-vs.-Assay Correlation Heatmap")
         # plt.tight_layout()
         # plt.show()
 
@@ -213,7 +213,7 @@ def Pearson_correlation_heatmap(X: pd.DataFrame, Y: pd.DataFrame, draw_heatmap: 
             cbar_kws={'label': 'Spearman ρ'}
         )
         g.ax_heatmap.set_xlabel("Assays")
-        plt.title('Descriptor-vs-Assay Correlation Heatmap', pad=40)
+        plt.title('Descriptor-vs.-Assay Correlation Heatmap', pad=40)
         plt.show()
 
     return rho
@@ -298,13 +298,14 @@ def plot_activity_boxplot_lcb_isomer(
         descriptor_df: pd.DataFrame,
         activity_df: pd.DataFrame,
         *,
-        lcb_max: int = 6,
         lcb_min: int = 0,
+        lcb_max: int = 6,
         ax: plt.Axes | None = None,
         palette: str | None = "Set2",
         show_points: bool = False,
         point_jitter: float = 0.15,
         point_kwargs: dict | None = None,
+        do_stat_tests: bool = False,
     ) -> plt.Axes:
     """
     Draw a grouped boxplot of mean activity values.
@@ -348,22 +349,71 @@ def plot_activity_boxplot_lcb_isomer(
 
     # # keep only LCB ≤ lcb_max
     # df = df[df['LongestCarbonBackbone'] <= lcb_max]
-    # cap any LCBs beyond lcb_max at a single overflow bin (e.g. 7)
-    overflow_val = lcb_max + 1          # 7 when lcb_max == 6
-    df.loc[df['LongestCarbonBackbone'] > lcb_max, 'LongestCarbonBackbone'] = overflow_val
 
-    # keep only LCB ≥ lcb_min
-    df = df[df['LongestCarbonBackbone'] >= lcb_min]
+    # # keep only LCB ≥ lcb_min
+    # df = df[df['LongestCarbonBackbone'] >= lcb_min]
+
+    # cap any LCBs beyond lcb_max at a single overflow bin (e.g. 7)
+    overflow_val = lcb_max + 1
+    df.loc[df['LongestCarbonBackbone'] > lcb_max, 'LongestCarbonBackbone'] = overflow_val
+    overflow_str = f"{overflow_val}+"
+  
+    # cap any LCBs below lcb_min at a single underflow bin (e.g. 0)
+    underflow_val = lcb_min - 1
+    df.loc[df['LongestCarbonBackbone'] < lcb_min, 'LongestCarbonBackbone'] = underflow_val
+    underflow_str = f"{underflow_val}−"
 
     # ensure numeric, ordered categories
     df['LongestCarbonBackbone'] = df['LongestCarbonBackbone'].astype(int)
     df['Isomer'] = df['Isomer'].astype(int)
 
+    # group the data by LCB and isomer to perform statistical difference tests
+    def get_tick_label(x, min_val=lcb_min, max_val=lcb_max):
+        """Format tick labels for LCB values."""
+        if x < min_val:
+            return underflow_str
+        elif x > max_val:
+            return overflow_str
+        else:
+            return str(x)
+        
+    isomer_labels = {0: 'ortho', 1: 'iso', 2: 'tere'}
+    def group_isomer(x):
+        return isomer_labels.get(x, 'unknown')
+        
+    if do_stat_tests:
+        from scipy.stats import kruskal
+        import scikit_posthocs as sp
+
+        df['group'] = df['LongestCarbonBackbone'].apply(get_tick_label) + "_" + df['Isomer'].apply(group_isomer)
+        groups = [d["mean_activity"].values for _, d in df.groupby("group")]
+        group_labels = df["group"].unique()
+        
+        H, p_kw = kruskal(*groups)
+        print(f"Kruskal-Wallis test: H={H:.3f}, p={p_kw:.3g}")
+
+        p_mat = sp.posthoc_dunn(
+            df,
+            val_col="mean_activity",
+            group_col="group",
+            p_adjust="holm"
+        )
+        p_mat.index = group_labels; p_mat.columns = group_labels   # nice ordering
+
+        sns.heatmap(
+            p_mat, annot=True, fmt=".2g", cmap="viridis_r", cbar_kws={"label": "p (adj)"},
+            vmin=0, vmax=1,
+        )
+        plt.title("Dunn-Holm adjusted p-values")
+        plt.show()
+
+
     lcb_order    = sorted(df['LongestCarbonBackbone'].unique())  # 1 … lcb_max
-    tick_labels = [str(x) if x <= lcb_max else f"{x}+" for x in lcb_order]
+        
+    tick_labels = [get_tick_label(x) for x in lcb_order]
 
     isomer_order = [0, 1, 2]                                     # ortho, iso, tere
-    isomer_labels = {0: 'ortho', 1: 'iso', 2: 'tere'}
+    
 
     # ------------------------------------------------------------
     # 2. Create the plot
@@ -476,6 +526,21 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
         'RotB', 'BranchingRatio', 'Fsp3',
         'Kappa1', 'TPSA', 
     ]
+    descriptors_to_labels = {
+        'MolWt': 'Molecular Weight [g/mol]',
+        'cLogP': 'cLogP',
+        'TPSA': 'TPSA [Å²]',
+        'RotB': 'Number of Rotatable Bonds',
+        'MolMR': 'Molar Refractivity [cm³/mol]',
+        'Fsp3': 'Fraction of sp³ Carbons',
+        'Kappa1': 'Kappa Shape Index 1',
+        'Kappa2': 'Kappa Shape Index 2',
+        'Kappa3': 'Kappa Shape Index 3',
+        'LongestCarbonBackbone': 'Longest Carbon Backbone',
+        'BranchingRatio': 'Branching Ratio',
+        'Isomer': 'Isomer Type (0=ortho, 1=iso, 2=tere)',
+        'Rgyr': 'Radius of Gyration [Å]',
+    }
     # is_discrete = [False, False, True, True, False]  # whether the descriptor is discrete
 
     # Create a figure with subplots for each descriptor
@@ -500,6 +565,20 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
         ax.fill_between(xg, lo, hi, color='grey', alpha=0.25, zorder=1)
         ax.plot(xg, curve, color="black", lw=2, zorder=2)
 
+        # limit the x-axis range to exclude outliers
+        Q1 = x.quantile(0.25)
+        Q3 = x.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        # Set x-axis limits if the data are outside the bounds
+        if x.min() > lower_bound:
+            lower_bound = None  # no need to set lower bound if all values are above it
+        if x.max() < upper_bound:
+            upper_bound = None  # no need to set upper bound if all values are below it
+        if (lower_bound is not None) or (upper_bound is not None):
+            ax.set_xlim(lower_bound, upper_bound)
+
         # # Plot each activity against the descriptor
         # for activity in activity_df.columns:
             # ax.scatter(
@@ -510,14 +589,145 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
             # )
         
         # ax.set_title(f"Activity vs. {descriptor}")
-        ax.set_xlabel(descriptor)
-        ax.set_ylabel("Activity")
+        # ax.set_xlabel(descriptor)
+        ax.set_xlabel(descriptors_to_labels[descriptor])
+        ax.set_ylabel("Mean Activity Value")
 
     # Remove any empty subplots
     for j in range(len(key_descriptors), len(axes)):
         fig.delaxes(axes[j])
     plt.show()
 
+def get_linear_model(X: pd.DataFrame, Y: pd.DataFrame):
+    """
+    Fit a linear regression model to the data.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Features (descriptors).
+    Y : pd.DataFrame
+        Target (activities).
+
+    Returns
+    -------
+    ols : statsmodels.regression.linear_model.RegressionResultsWrapper
+        Fitted linear regression model.
+    marginal_r2 : dict
+        Dictionary with marginal R² values for each descriptor.
+        Keys are descriptor names, values are R² values.
+    """
+    # from sklearn.linear_model import LinearRegression
+    # model = LinearRegression()
+    # model.fit(X, Y)
+    # return model
+    import statsmodels.api as sm
+    # from sklearn.metrics import r2_score
+
+    y_mean = Y.mean(axis=1)
+    y_mean_z = (y_mean - y_mean.mean()) / y_mean.std()  # z-score the mean activity
+    X_lin = sm.add_constant(X)              # X came from z_scale_df(descriptor_df)
+    ols = sm.OLS(y_mean_z, X_lin).fit()
+    print(ols.summary())
+
+    r2 = ols.rsquared
+    r2_adj = ols.rsquared_adj
+
+    print(
+        f"Linear model explains {r2*100:.1f}% of the variance "
+        f"({r2_adj*100:.1f}% adjusted)."
+    )
+
+    # marginal_r2 = {}
+    # for col in X.columns:
+    #     mod = sm.OLS(y_mean, sm.add_constant(X[[col]])).fit()
+    #     marginal_r2[col] = mod.rsquared
+    #     print(f"{100*mod.rsquared:.3f}% variance explained by {col}")
+
+    return (
+        ols
+        # marginal_r2,
+    )
+
+def PCA_plot(
+        X: pd.DataFrame,
+        Y: pd.DataFrame,
+    ) -> plt.Axes:
+    """
+    Perform PCA on the descriptor matrix and plot the first two components.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Descriptor matrix (rows = compounds, columns = descriptors).
+    Y : pd.DataFrame
+        Activity matrix (rows = compounds, columns = assays).
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        Axis containing the PCA plot.
+    """
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.decomposition import PCA               # Principal Component Analysis
+    from sklearn.linear_model import LinearRegression
+    from mpl_toolkits.mplot3d import Axes3D              # registers the 3-D projection
+
+    # Standardise BOTH X and y so units don’t distort slopes
+    scaler_X = StandardScaler()
+    scaler_y = StandardScaler()
+
+    y = Y.mean(axis=1).values  # mean activity per compound
+
+    X_z = scaler_X.fit_transform(X)
+    y_z = scaler_y.fit_transform(y.reshape(-1, 1)).ravel()
+
+    # ------------------------------------------------------------------
+    # 1.  Principal-component projection
+    # ------------------------------------------------------------------
+    pca = PCA(n_components=2, random_state=42)
+    PCs = pca.fit_transform(X_z)                 # PCs[:,0] = PC1, PCs[:,1] = PC2
+
+    # ------------------------------------------------------------------
+    # 2.  Fit linear model in PC space
+    # ------------------------------------------------------------------
+    reg = LinearRegression()
+    reg.fit(PCs, y_z)                            # slope in rotated coordinates
+
+    # ------------------------------------------------------------------
+    # 3.  Visualise scatter + regression plane
+    # ------------------------------------------------------------------
+    fig = plt.figure(figsize=(21, 15))
+    ax  = fig.add_subplot(111, projection='3d')
+
+    # --- 3-D scatter: each point = one compound
+    ax.scatter(PCs[:, 0], PCs[:, 1], y_z,
+            c=y_z, cmap='viridis', s=18, alpha=0.8, linewidth=0)
+
+    # --- regression plane
+    xx, yy = np.meshgrid(np.linspace(PCs[:,0].min(), PCs[:,0].max(), 25),
+                        np.linspace(PCs[:,1].min(), PCs[:,1].max(), 25))
+    zz = reg.intercept_ + reg.coef_[0]*xx + reg.coef_[1]*yy
+    ax.plot_surface(xx, yy, zz, alpha=0.25, color='lightgrey', rstride=1, cstride=1, linewidth=0)
+
+    # --- cosmetics
+    # ax.set_xlabel(f'PC1  ({pca.explained_variance_ratio_[0]*100:.1f}% var)')
+    # ax.set_ylabel(f'PC2  ({pca.explained_variance_ratio_[1]*100:.1f}% var)')
+    ax.set_xlabel(f'PC1', fontsize=25, labelpad=15)
+    ax.set_ylabel(f'PC2', fontsize=25, labelpad=15)
+    ax.set_zlabel('MAV (z-score)', fontsize=25, labelpad=10)
+
+    ax.xaxis.set_rotate_label(False)
+    ax.yaxis.set_rotate_label(False)
+    # ax.zaxis.set_rotate_label(False)
+
+    ax.view_init(elev=22, azim=-38)
+
+    # ax.set_title('Linear Trend in PC Space')
+    plt.tight_layout()
+    plt.show()
+
+    return ax
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process activity matrix for entity similarity.")
@@ -525,10 +735,14 @@ if __name__ == "__main__":
                         help='Directory to cache the activity matrix.')
     parser.add_argument('--outdir', type=str, default='cache/descriptors',
                         help='Directory to cache the descriptors.')
+    parser.add_argument('--descriptor_plots', action='store_true',
+                        help='Plot the activity features against the descriptors.')
     parser.add_argument('--heatmap', action='store_true',
-                        help='Draw a heatmap of the descriptor vs activity correlation.')
+                        help='Draw a heatmap of the descriptor vs. activity correlation.')
     parser.add_argument('--lcb_plots', action='store_true',
                         help='Plot the activity vs. longest carbon backbone (LCB) and isomer type.')
+    parser.add_argument('--linear_plot', action='store_true',
+                        help='Plot the linear regression model of descriptors vs. activity.')
     # parser.add_argument('--normalize', action='store_true',
     #                     help='Normalize the activity matrix.')
     # parser.add_argument('--z_score', action='store_true',
@@ -568,7 +782,12 @@ if __name__ == "__main__":
         descriptor_df = pd.DataFrame(descriptor_vectors, index=activity_df.index)
         descriptor_df.to_parquet(descriptor_parquet)
 
-    plot_activity_features(descriptor_df, activity_df)
+    if args.descriptor_plots:
+        # Plot the activity features against the descriptors
+        # This will create a scatter plot for each descriptor against the mean activity
+        # and a LOESS curve to show the trend.
+        print("Plotting activity features against descriptors...")
+        plot_activity_features(descriptor_df, activity_df)
 
     # manually dropping descriptors with high VIFs
     descriptor_df = descriptor_df.drop(columns=[
@@ -583,6 +802,7 @@ if __name__ == "__main__":
         # plot the trend with longest carbon backbone
         # plot_activity_scatter_lcb(descriptor_df, activity_df)
         plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df)
+        plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df, lcb_min=6, lcb_max=5, do_stat_tests=True)
         # plot_activity_boxplot_lcb_isomer(descriptor_df, activity_df, lcb_max=100, lcb_min=7)
         # show_C0_mols(descriptor_df)
 
@@ -595,10 +815,19 @@ if __name__ == "__main__":
     print("VIF Table:")
     print(vif_table)
     
-    
     for descriptor in vif_table['descriptor']:
         if vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0] > 10:
             print(f"Warning: High VIF detected for descriptor '{descriptor}' (VIF={vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0]}). Consider removing it.")
+
+    # Fit a linear regression model to the data
+    # ols, marginal_r2 = get_linear_model(X, Y)
+    ols = get_linear_model(X, Y)
+
+    if args.linear_plot:
+        # Plot the linear regression model
+        # This will show the relationship between the descriptors and the mean activity
+        print("Plotting linear regression model...")
+        PCA_plot(X, Y)
 
     # Quick Pearson/Spearman heat-map
     rho = Pearson_correlation_heatmap(X, Y, draw_heatmap=args.heatmap)

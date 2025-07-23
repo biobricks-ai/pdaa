@@ -528,8 +528,6 @@ phthalate_df.to_csv(cachedir / 'phthalate_df.csv', index=False)
 clustered_phthalate_df.to_csv(cachedir / 'clustered_phthalate_df.csv', index=False)
 # endregion
 
-sys.exit(0)  # Exit early to avoid running the rest of the script
-
 # region CHARACTERIZE PRIORITY PHTHALATES ===============================================================
 def plot_phthalate_activity_relationships():
     df4 = clustered_phthalate_df.groupby(['inchi'])['positive_prediction'].mean().reset_index()
@@ -671,7 +669,8 @@ def mkimage():
     
     # Get samples per cluster
     samples_list = []
-    for cluster in [2,0,1]:
+    # for cluster in [2,0,1]:
+    for cluster in [0,2,1]:  # Order clusters by mean activity
         cluster_df = df4[df4['cluster'] == cluster]
         
         # Get 5 compounds nearest to median activity
@@ -686,7 +685,8 @@ def mkimage():
     samples = pd.concat(samples_list + [examples])
     
     mols = samples['mol'].tolist()
-    legends = [f"{row['name'] if row['is_example'] else ''} (Cluster {row['cluster']}, Activity: {row['positive_prediction']:.3f})" 
+    # legends = [f"{row['name'] if row['is_example'] else ''} (Cluster {row['cluster'] + 1}, Activity: {row['positive_prediction']:.3f})" 
+    legends = [f"{row['name'] if row['is_example'] else ''} (Cluster {row['cluster'] + 1}, MAV: {row['positive_prediction']:.3f})" 
               for _, row in samples.iterrows()]
 
     # Create individual images with colored backgrounds
