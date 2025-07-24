@@ -1,5 +1,6 @@
 import pandas as pd
 from pathlib import Path
+from rdkit import Chem
 
 def get_activity_df(cachedir: str | Path) -> pd.DataFrame:
     """Load the activity matrix from a parquet file."""
@@ -11,3 +12,13 @@ def get_activity_df(cachedir: str | Path) -> pd.DataFrame:
     activity_df = pd.read_parquet(activity_df_path)
 
     return activity_df
+
+def smiles_to_inchi(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    inchi = Chem.MolToInchi(mol)
+    return inchi
+
+def inchi_to_smiles(inchi):
+    mol = Chem.MolFromInchi(inchi)
+    smiles = Chem.MolToSmiles(mol)
+    return smiles
