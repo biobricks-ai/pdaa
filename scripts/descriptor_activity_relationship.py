@@ -4,140 +4,25 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from rdkit.Chem import AllChem, Descriptors, Descriptors3D
-from statsmodels.stats.outliers_influence import variance_inflation_factor
+from rdkit.Chem import AllChem
 from skmisc.loess import loess               # pip install scikit-misc
 from tqdm import tqdm
 import statsmodels.api as sm
 
 import sys
 sys.path.append('./')  # so utility scripts can be found
-from stages.utils.pdaa import is_phthalate, longest_carbon_backbone
-from scripts.utils.helpers import get_activity_df, styled_heatmap
+# from stages.utils.pdaa import is_phthalate, longest_carbon_backbone
+from scripts.utils.helpers import (
+    get_activity_df,
+    styled_heatmap,
+    z_scale_df,
+    get_linear_model,
+    get_descriptors,
+    compute_vifs,
+)
 
 # savepath for figures
 fig_path = Path('cache/descriptors')
-
-def z_scale_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Z-score normalize the dataframe by columns."""
-    # mean = np.mean(matrix, axis=0)
-    # std_dev = np.std(matrix, axis=0)
-    return (df - df.mean())/df.std()
-
-def classify_isomer(mol: AllChem.Mol) -> int:
-    """
-    Classify the isomer type of a phthalate molecule based on its structure.
-
-    Parameters
-    ----------
-    mol : rdkit.Chem.Mol
-        Molecule already validated as a phthalate.
-
-    Returns
-    -------
-    int
-        0 for ortho, 1 for iso (meta), 2 for tere (para) phthalate.
-    """
-    possible_modes = ('ortho_phthalate', 'meta_phthalate', 'para_phthalate')
-    for i, mode in enumerate(possible_modes):
-        if is_phthalate(mol, modes=(mode,)):
-            return i
-
-def get_branching_ratio(mol: AllChem.Mol) -> float:
-    """
-    Calculate the branching ratio of a molecule.
-
-    Parameters
-    ----------
-    mol : rdkit.Chem.Mol
-        Molecule to calculate the branching ratio for.
-
-    Returns
-    -------
-    float
-        Branching ratio of the molecule.
-    """
-    # list all carbons
-    carbons = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6]
-    if len(carbons) == 0:
-        return 0.0
-
-    # Carbons with more than 2 heavy neighbors
-    branch_count = 0
-    for atom in carbons:
-        heavy_neighbors = [n for n in atom.GetNeighbors() if n.GetAtomicNum() > 1]
-        if len(heavy_neighbors) > 2:
-            branch_count += 1
-    
-    return branch_count / len(carbons)
-
-def get_descriptors(mol):
-    """Calculate descriptors for a given molecule."""
-    feats = {
-        'MolWt'            : Descriptors.MolWt(mol),  # molecular weight
-        'cLogP'            : Descriptors.MolLogP(mol),  # octanol-water partition coefficient
-        'TPSA'             : Descriptors.TPSA(mol),  # topological polar surface area
-        'RotB'             : Descriptors.NumRotatableBonds(mol),  # number of rotatable bonds
-        'MolMR'            : Descriptors.MolMR(mol),  # molar refractivity
-        'Fsp3'             : Descriptors.FractionCSP3(mol),  # fraction of sp3 hybridized carbons
-        'Kappa1'           : Descriptors.Kappa1(mol),  # Kappa shape index 1
-        'Kappa2'           : Descriptors.Kappa2(mol),  # Kappa shape index 2
-        'Kappa3'           : Descriptors.Kappa3(mol),  # Kappa shape index 3
-        'LongestCarbonBackbone': longest_carbon_backbone(mol),  # longest carbon side chain length
-        'BranchingRatio'   : get_branching_ratio(mol),  # branching ratio
-    }
-    # 3-D shape (needs conformer)
-    AllChem.EmbedMolecule(mol, randomSeed=0xC0FFEE)
-    feats['Rgyr'] = Descriptors3D.RadiusOfGyration(mol)
-    # custom: side-chain length & branching (sketch)
-    feats['Isomer'] = classify_isomer(mol)  # 0=ortho,1=iso,2=tere
-    return feats
-
-def compute_vifs(X: pd.DataFrame, *, add_intercept: bool = False) -> pd.DataFrame:
-    """
-    Calculate VIF for each column in a descriptor matrix.
-
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Columns are descriptors, rows are compounds (already z-scaled is ideal).
-    add_intercept : bool, default False
-        - If True, appends a constant column before computing VIFs.
-        - Most chem-descriptor sets don't need the intercept; set to True only
-          if you plan to include one in later regression models.
-
-    Returns
-    -------
-    pd.DataFrame
-        Two columns:
-        - 'descriptor': original column names
-        - 'VIF': variance inflation factor (≥ 1; > 10 is a red flag)
-    """
-    # - Guard against perfectly constant descriptors (std == 0)
-    constant_cols = X.columns[X.std() == 0]
-    if len(constant_cols):
-        raise ValueError(f"Constant descriptors detected: {list(constant_cols)}")
-
-    XX = X.copy()
-    if add_intercept:
-        XX = XX.assign(_intercept_=1.0)
-
-    # - Compute VIF for each column; statsmodels needs ndarray input
-    vifs = [
-        variance_inflation_factor(XX.values, idx)
-        for idx in range(XX.shape[1])
-    ]
-
-    res = pd.DataFrame({
-        'descriptor': XX.columns,
-        'VIF': vifs
-    })
-
-    # - If an intercept was added, drop it from the result
-    if add_intercept:
-        res = res.query("descriptor != '_intercept_'").reset_index(drop=True)
-
-    return res.sort_values('VIF', ascending=False).reset_index(drop=True)
 
 def Pearson_correlation_heatmap(X: pd.DataFrame, Y: pd.DataFrame, draw_heatmap: bool = False) -> pd.DataFrame:
     """
@@ -700,56 +585,6 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
     plt.savefig(outdir / "activity_by_descriptors_CI.png")
     plt.show()
 
-def get_linear_model(X: pd.DataFrame, Y: pd.DataFrame):
-    """
-    Fit a linear regression model to the data.
-
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Features (descriptors).
-    Y : pd.DataFrame
-        Target (activities).
-
-    Returns
-    -------
-    ols : statsmodels.regression.linear_model.RegressionResultsWrapper
-        Fitted linear regression model.
-    marginal_r2 : dict
-        Dictionary with marginal R² values for each descriptor.
-        Keys are descriptor names, values are R² values.
-    """
-    # from sklearn.linear_model import LinearRegression
-    # model = LinearRegression()
-    # model.fit(X, Y)
-    # return model
-    
-    # from sklearn.metrics import r2_score
-
-    y_mean = Y.mean(axis=1)
-    y_mean_z = (y_mean - y_mean.mean()) / y_mean.std()  # z-score the mean activity
-    X_lin = sm.add_constant(X)              # X came from z_scale_df(descriptor_df)
-    ols = sm.OLS(y_mean_z, X_lin).fit()
-    print(ols.summary())
-
-    r2 = ols.rsquared
-    r2_adj = ols.rsquared_adj
-
-    print(
-        f"Linear model explains {r2*100:.1f}% of the variance "
-        f"({r2_adj*100:.1f}% adjusted)."
-    )
-
-    # marginal_r2 = {}
-    # for col in X.columns:
-    #     mod = sm.OLS(y_mean, sm.add_constant(X[[col]])).fit()
-    #     marginal_r2[col] = mod.rsquared
-    #     print(f"{100*mod.rsquared:.3f}% variance explained by {col}")
-
-    return (
-        ols
-        # marginal_r2,
-    )
 
 def PCA_plot(
         X: pd.DataFrame,
@@ -830,7 +665,6 @@ def PCA_plot(
     plt.show()
 
     return ax
-
 
 
 if __name__ == "__main__":
