@@ -8,7 +8,13 @@ from skmisc.loess import loess               # pip install scikit-misc
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA               # Principal Component Analysis
 
-from rdkit.Chem import AllChem, Descriptors, Descriptors3D
+from rdkit.Chem import (
+    AllChem,
+    Descriptors,
+    Descriptors3D,
+    DataStructs,
+    rdFingerprintGenerator as rfg
+)
 
 import sys
 sys.path.append('./')  # so utility scripts can be found
@@ -142,7 +148,12 @@ def get_branching_ratio(mol) -> float:
     
     return branch_count / len(carbons)
 
-def get_descriptors(mol: AllChem.Mol, *, use_phthalate_set: bool = True) -> dict:
+def get_descriptors(
+        mol: AllChem.Mol, *,
+        use_phthalate_set: bool = True,
+        use_general_set: bool = False,
+        use_vectors: bool = False,
+) -> dict:
     """Calculate descriptors for a given molecule."""
     feats = {
         'MolWt'            : Descriptors.MolWt(mol),  # molecular weight
@@ -163,7 +174,50 @@ def get_descriptors(mol: AllChem.Mol, *, use_phthalate_set: bool = True) -> dict
     # 3-D shape (needs conformer)
     AllChem.EmbedMolecule(mol, randomSeed=0xC0FFEE)
     feats['Rgyr'] = Descriptors3D.RadiusOfGyration(mol)
-    # custom: side-chain length & branching (sketch)
+
+    if use_general_set or use_vectors:
+        from rdkit.Chem import (
+            rdMolDescriptors as rdmd,
+            MolSurf,
+        )
+    
+    if use_general_set:
+        # General descriptors
+        general_feats = {
+            'NumHAcceptors'    : Descriptors.NumHAcceptors(mol),  # number of hydrogen bond acceptors
+            'NumHDonors'       : Descriptors.NumHDonors(mol),  # number of hydrogen bond donors
+            'NumValenceElectrons': Descriptors.NumValenceElectrons(mol),  # number of valence electrons
+            'NumAromaticRings' : Descriptors.NumAromaticRings(mol),  # number of aromatic rings
+            'NumHalogens'      : Descriptors.fr_halogen(mol),  # number of halogen atoms
+            'PBF'              : rdmd.CalcPBF(mol),  # planarity
+            'Spher'            : rdmd.CalcSpherocityIndex(mol),  # spherocity index
+            'Chi0'             : Descriptors.Chi0(mol),  # chi index 0
+            'Chi1'             : Descriptors.Chi1(mol),  # chi index 1
+        }
+        feats.update(general_feats)
+
+    if use_vectors:
+        # ---------- PEOE-VSA block ----------
+        try:
+            # 1) vector form
+            peoe_vec = rdmd.CalcPEOE_VSA(mol)      # tuple of 14 floats
+        except AttributeError:
+            # 2) fall-back: call each bin function explicitly
+            peoe_vec = [getattr(MolSurf, f"PEOE_VSA{i}")(mol) for i in range(1, 15)]
+        feats.update({f'peoe_vsa_{i+1}': v
+                    for i, v in enumerate(peoe_vec)})
+        
+        # ---------- SlogP block ----------
+        try:
+            # 1) vector form
+            slogp_vec = rdmd.CalcSlogP_VSA(mol)    # tuple of floats
+        except AttributeError:
+            # 2) fall-back: call each bin function explicitly
+            slogp_vec = [getattr(MolSurf, f"SlogP_VSA{i}")(mol) for i in range(1, 13)]
+
+        feats.update({f'slogp_vsa_{i+1}': v
+                    for i, v in enumerate(slogp_vec)})
+
     return feats
 
 def z_scale_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -268,10 +322,9 @@ def compute_vifs(X: pd.DataFrame, *, add_intercept: bool = False) -> pd.DataFram
 
     return res.sort_values('VIF', ascending=False).reset_index(drop=True)
 
-def get_activity_df(cachedir: str | Path) -> pd.DataFrame:
+def get_activity_df(cachedir: str | Path = Path('cache/entity_similarity')) -> pd.DataFrame:
     """Load the activity matrix from a parquet file."""
     # Define the path to the parquet file
-    cachedir = Path('cache/entity_similarity')
     activity_df_path = cachedir / 'activity_matrix_filled.parquet'
 
     # Load the activity matrix from the parquet file
@@ -588,3 +641,139 @@ def pca_variance_ratio(X: pd.DataFrame) -> PCA:
         print(f"PC{i+1}: {var:.2%}, cumulative: {cumulative_variance:.2%}")
 
     return pca
+
+def remove_high_vif_descriptors(
+        X: pd.DataFrame,
+        vif_threshold: float = 10.0,
+        to_print: bool = True,
+) -> pd.DataFrame:
+    """
+    Remove descriptors with high VIF iteratively until all VIFs are below a threshold.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Descriptor matrix (rows = compounds, columns = descriptors).
+    vif_threshold : float, default 10.0
+        Threshold for variance inflation factor (VIF).
+
+    Returns
+    -------
+    pd.DataFrame
+        Descriptor matrix with high VIF descriptors removed.
+    """
+    # drop any columns with NaNs
+    X = X.dropna(axis=1, how='any')
+
+    # drop any constant columns
+    constant_cols = X.columns[X.std() == 0]
+    X.drop(columns=constant_cols, inplace=True)
+
+    # Automatically remove the highest VIF descriptors until all VIFs are below a threshold
+    while True:
+        vif_table = compute_vifs(X)
+        high_vif = vif_table[vif_table['VIF'] > vif_threshold]
+        
+        if high_vif.empty:
+            break
+        
+        # Remove the descriptor with the highest VIF
+        descriptor_to_remove = high_vif.loc[high_vif['VIF'].idxmax(), 'descriptor']
+        if to_print:
+            print(f"Removing descriptor '{descriptor_to_remove}' with VIF {high_vif['VIF'].max()}")
+        X.drop(columns=[descriptor_to_remove], inplace=True)
+
+    return X
+
+# def inchis_to_morgan_df(
+#         df: pd.DataFrame,
+#         *,
+#         inchi_col: str = 'inchi',     # name of the column holding InChI strings
+#         radius: int = 2,              # ECFP-4 by default
+#         n_bits: int = 2048,           # fingerprint length
+#         use_features: bool = True,    # use pharmacophore-type features
+# ) -> pd.DataFrame:
+#     """
+#     Convert a DataFrame of InChI strings into a DataFrame of Morgan-fingerprint bits.
+
+#     Returns a DataFrame with the same index (rows with invalid InChI are dropped)
+#     and columns named fp_0 ... fp_<n_bits-1>, each holding 0/1 integers.
+#     """
+#     bit_arrays = []
+#     valid_idx = []
+
+#     # Fetch InChIs either from a column or the index
+#     inchis = df[inchi_col] if inchi_col in df.columns else df.index.to_series()
+
+#     for idx, inchi in inchis.items():
+#         mol = AllChem.MolFromInchi(inchi, sanitize=True, removeHs=True)
+#         if mol is None:
+#             # Skip rows that cannot be parsed
+#             continue
+#         # fp = AllChem.GetMorganFingerprintAsBitVect(
+#         #     mol,
+#         #     radius=radius,
+#         #     nBits=n_bits,
+#         #     useFeatures=use_features,
+#         # )
+#         morgan_gen = rfg.GetMorganGenerator(
+#             radius=radius,
+#             fpSize=n_bits,
+#             useFeatures=use_features,
+#         )
+#         arr = np.zeros((n_bits,), dtype=np.uint8)
+#         DataStructs.ConvertToNumpyArray(morgan_gen, arr)
+#         bit_arrays.append(arr)
+#         valid_idx.append(idx)
+
+#     fp_df = pd.DataFrame(
+#         data=np.vstack(bit_arrays),
+#         index=valid_idx,
+#         columns=[f'fp_{i}' for i in range(n_bits)],
+#         dtype=np.uint8,
+#     )
+
+#     return fp_df
+
+def inchis_to_morgan_df(
+        df: pd.DataFrame,
+        *,
+        inchi_col: str | None = 'inchi',   # set to None if InChIs are in the index
+        radius: int = 2,                   # ECFP‑4 (radius 2)
+        n_bits: int = 2048,
+) -> pd.DataFrame:
+    """
+    Convert InChI strings to a DataFrame of Morgan‑fingerprint bits
+    using RDKit's newer FingerprintGenerator API.
+    """
+    # -------- generator setup (done once) -----------------------------------
+    morgan_gen = rfg.GetMorganGenerator(
+        radius=radius,
+        fpSize=n_bits,
+        # includeChirality=False,
+    )
+
+    # -------- pull InChIs ----------------------------------------------------
+    if inchi_col and inchi_col in df.columns:          # InChIs in a column
+        inchis = df[inchi_col]
+    else:                                              # InChIs in the index
+        inchis = df.index.to_series()
+
+    bit_arrays, valid_idx = [], []
+
+    for idx, inchi in inchis.items():
+        mol = AllChem.MolFromInchi(inchi, sanitize=True, removeHs=True)
+        if mol is None:
+            continue
+        fp = morgan_gen.GetFingerprint(mol)            # new API call
+        arr = np.zeros((n_bits,), dtype=np.uint8)
+        DataStructs.ConvertToNumpyArray(fp, arr)
+        bit_arrays.append(arr)
+        valid_idx.append(idx)
+
+    return pd.DataFrame(
+        np.vstack(bit_arrays),
+        index=valid_idx,
+        columns=[f'fp_{i}' for i in range(n_bits)],
+        dtype=np.uint8,
+    )

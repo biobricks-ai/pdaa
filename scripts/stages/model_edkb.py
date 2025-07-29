@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
@@ -14,38 +15,55 @@ from scripts.utils.helpers import (
     compute_vifs,
     PCA_plot,
     plot_activity_features,
-    pca_variance_ratio
+    pca_variance_ratio,
+    remove_high_vif_descriptors,
 )
-
-
 
 cachedir = Path('cache/edkb')
 activity_df = pd.read_parquet(cachedir / 'activity_matrix_filled.parquet')
-
 
 # Convert the 'title' column to RDKit Mol objects
 mol_list = [AllChem.AddHs(AllChem.MolFromInchi(s)) for s in tqdm(activity_df.index, desc="Converting InChIs to RDKit Mol objects")]
 
 # Calculate descriptors for each molecule
 descriptor_parquet = cachedir / 'descriptors.parquet'
-if descriptor_parquet.exists():
+use_cache = False
+if descriptor_parquet.exists() and use_cache:
     print(f"Loading existing descriptors from {descriptor_parquet}")
     descriptor_df = pd.read_parquet(descriptor_parquet)
 else:
-    descriptor_vectors = [get_descriptors(mol, use_phthalate_set=False) for mol in tqdm(mol_list, desc="Calculating descriptors")]
+    descriptor_vectors = [get_descriptors(
+        mol,
+        use_phthalate_set=False,
+        use_general_set=True,
+        # use_vectors=True,
+    ) for mol in tqdm(mol_list, desc="Calculating descriptors")]
     descriptor_df = pd.DataFrame(descriptor_vectors, index=activity_df.index)
     descriptor_df.to_parquet(descriptor_parquet)
 
 # Remove descriptors with high multicollinearity or low variance
 # Note: Adjust the list of descriptors based on your analysis
-descriptor_df = descriptor_df.drop(columns=[
-    'MolWt',
-    'Kappa2',
-])
+# descriptor_df.drop(columns=[
+#     'Chi1',
+#     'NumValenceElectrons',
+#     'MolWt',
+#     'Chi0',
+#     'TPSA',
+#     'Kappa2',
+#     'Kappa1',
+#     'Spher',
+# ], inplace=True)
 
 # Data preprocessing: scale the descriptors
 X = z_scale_df(descriptor_df)
 Y = z_scale_df(activity_df)
+# # print the number of infs and nans in each column of X
+# print("Number of NaNs in each descriptor column:")
+# print(X.isna().sum())
+# print("Number of Infs in each descriptor column:")
+# print((X == np.inf).sum())
+
+X = remove_high_vif_descriptors(X, vif_threshold=10)
 
 # Compute variance inflation factors (VIFs) to check for multicollinearity
 vif_table = compute_vifs(X)
@@ -57,8 +75,8 @@ for descriptor in vif_table['descriptor']:
         print(f"Warning: High VIF detected for descriptor '{descriptor}' (VIF={vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0]}). Consider removing it.")
 
 
-# Fit a linear regression model to the data
-ols = get_linear_model(X, Y)
+# # Fit a linear regression model to the data
+# ols = get_linear_model(X, Y)
 
 
 
