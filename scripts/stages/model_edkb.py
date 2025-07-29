@@ -1,14 +1,23 @@
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
+import statsmodels.api as sm
 
 from rdkit.Chem import AllChem, Descriptors, Descriptors3D
 
 import sys
 sys.path.append('./')  # so utility scripts can be found
 from scripts.utils.helpers import (
-    z_scale_df, get_linear_model, get_descriptors, compute_vifs
+    z_scale_df,
+    get_linear_model,
+    get_descriptors,
+    compute_vifs,
+    PCA_plot,
+    plot_activity_features,
+    pca_variance_ratio
 )
+
+
 
 cachedir = Path('cache/edkb')
 activity_df = pd.read_parquet(cachedir / 'activity_matrix_filled.parquet')
@@ -50,3 +59,8 @@ for descriptor in vif_table['descriptor']:
 
 # Fit a linear regression model to the data
 ols = get_linear_model(X, Y)
+
+
+
+# pca_variance_ratio(X)
+# PCA_plot(X, Y)

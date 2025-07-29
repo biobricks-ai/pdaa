@@ -17,7 +17,7 @@ resourcedir = Path('resources')
 edkb_parquet = resourcedir / 'edkb_log_rba.parquet'
 edkb = pd.read_parquet(edkb_parquet)
 
-_ = pdaa.predict_all_properties_with_sqlite_cache(edkb['inchi'])
+pdaa.predict_all_properties_with_sqlite_cache(edkb['inchi'])
 
 tqdm.pandas()
 

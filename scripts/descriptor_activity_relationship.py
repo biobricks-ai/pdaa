@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 from rdkit.Chem import AllChem
-from skmisc.loess import loess               # pip install scikit-misc
+# from skmisc.loess import loess               # pip install scikit-misc
 from tqdm import tqdm
 import statsmodels.api as sm
 
@@ -19,6 +19,7 @@ from scripts.utils.helpers import (
     get_linear_model,
     get_descriptors,
     compute_vifs,
+    plot_activity_features
 )
 
 # savepath for figures
@@ -439,151 +440,9 @@ def show_C0_mols(descriptor_df: pd.DataFrame):
             fname = f"{inchi.replace('/', '_')}.png"
             img.save(img_path / fname)
 
-def loess_ci(x, y, span=0.3, x_grid=None, level=0.95):
-    x_grid = np.linspace(x.min(), x.max(), 200) if x_grid is None else x_grid
-    model   = loess(x, y, span=span, degree=1)
-    model.fit()
-    pred    = model.predict(x_grid, stderror=True)
-    # conf    = pred.confidence(level=level)
-    conf    = pred.confidence(alpha=1 - level)
-    return x_grid, pred.values, conf.lower, conf.upper
 
-def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFrame, *, linear_model = None, outdir: Path):
-    """
-    Plot the activity features against the descriptors.
 
-    Parameters
-    ----------
-    descriptor_df : pd.DataFrame
-        DataFrame containing descriptors.
-    activity_df : pd.DataFrame
-        DataFrame containing activities.
-    """
-    # key_descriptors = [
-    #     'MolWt', 'cLogP', 'RotB',
-    #     'LongestCarbonBackbone', 'BranchingRatio'
-    # ]
-    if linear_model is None:
-        key_descriptors = [
-            'Rgyr', 'RotB', 'BranchingRatio',
-            'Fsp3', 'Kappa1', 'TPSA',
-            'MolWt', 'cLogP', 'Isomer',
-        ]
-    else:
-        key_descriptors = [
-            'Rgyr', 'RotB', 'BranchingRatio',
-            'Fsp3', 'LinearModel', 'Kappa1',
-            'MolWt', 'cLogP', 'Isomer',
-        ]
-    descriptors_to_labels = {
-        'MolWt': 'Molecular Weight [g/mol]',
-        'cLogP': 'cLogP',
-        'TPSA': 'TPSA [Å²]',
-        'RotB': 'Number of Rotatable Bonds',
-        'MolMR': 'Molar Refractivity [cm³/mol]',
-        'Fsp3': 'Fraction of sp³ Carbons',
-        'Kappa1': 'Kappa Shape Index 1',
-        'Kappa2': 'Kappa Shape Index 2',
-        'Kappa3': 'Kappa Shape Index 3',
-        'LongestCarbonBackbone': 'Longest Carbon Backbone',
-        'BranchingRatio': 'Branching Ratio',
-        'Isomer': 'Isomer Type (0=ortho, 1=iso, 2=tere)',
-        'Rgyr': 'Radius of Gyration [Å]',
-        'LinearModel': 'Linear Model Prediction',
-    }
-    # is_discrete = [False, False, True, True, False]  # whether the descriptor is discrete
 
-    # Create a figure with subplots for each descriptor
-    # fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(15, 10))
-    fig, axes = plt.subplots(nrows=3, ncols=3, figsize=(15, 15))
-    axes = axes.flatten()
-    Y = activity_df.mean(axis=1)  # mean activity across all assays
-    for i, descriptor in enumerate(key_descriptors):
-        ax = axes[i]
-        x = descriptor_df[descriptor]
-        if descriptor in ['LinearModel', 'Isomer']:
-            if descriptor == 'LinearModel':
-                sns.regplot(
-                    x=x,
-                    y=Y,
-                    fit_reg=True,
-                    ci=95,
-                    scatter_kws={
-                        'alpha': 0.5,
-                        'edgecolors': 'white',
-                        'color': 'green'
-                    },
-                    line_kws={'color': 'black', 'lw': 2},                    
-                    ax=ax
-                )
-                # Set xtick steps to 0.05
-                import matplotlib.ticker as mticker
-                ax.xaxis.set_major_locator(mticker.MultipleLocator(0.05))
-            else:
-                sns.regplot(
-                    x=x,
-                    y=Y,
-                    fit_reg=True,
-                    ci=95,
-                    scatter_kws={
-                        'alpha': 0.5,
-                        'edgecolors': 'white',
-                    },
-                    line_kws={'color': 'black', 'lw': 2},
-                    ax=ax
-                )
-            
-        else:
-            sns.regplot(
-                x=x,
-                y=Y,
-                # lowess=True,
-                # robust=True,
-                fit_reg=False,
-                # ci=95,
-                scatter_kws={'alpha': 0.5, 'edgecolors': 'white'},
-                # line_kws={'color': 'black', 'lw': 2},
-                ax=ax
-            )
-            xg, curve, lo, hi = loess_ci(x.values, Y.values, span=0.5)
-            ax.fill_between(xg, lo, hi, color='grey', alpha=0.25, zorder=1)
-            ax.plot(xg, curve, color="black", lw=2, zorder=2)
-        
-
-        # limit the x-axis range to exclude outliers
-        Q1 = x.quantile(0.25)
-        Q3 = x.quantile(0.75)
-        IQR = Q3 - Q1
-        lower_bound = Q1 - 1.5 * IQR
-        upper_bound = Q3 + 1.5 * IQR
-        # Set x-axis limits if the data are outside the bounds
-        if x.min() > lower_bound:
-            lower_bound = None  # no need to set lower bound if all values are above it
-        if x.max() < upper_bound:
-            upper_bound = None  # no need to set upper bound if all values are below it
-        if (lower_bound is not None) or (upper_bound is not None):
-            ax.set_xlim(lower_bound, upper_bound)
-
-        # # Plot each activity against the descriptor
-        # for activity in activity_df.columns:
-            # ax.scatter(
-            #     descriptor_df[descriptor],
-            #     activity_df[activity],
-            #     # label=activity,
-            #     alpha=0.5
-            # )
-        
-        # ax.set_title(f"Activity vs. {descriptor}")
-        # ax.set_xlabel(descriptor)
-        ax.set_xlabel(descriptors_to_labels[descriptor])
-        ax.set_ylabel("Mean Activity Value")
-
-    # Remove any empty subplots
-    for j in range(len(key_descriptors), len(axes)):
-        fig.delaxes(axes[j])
-
-    plt.savefig(outdir / "activity_by_descriptors_CI.png")
-    plt.show()
 
 
 def PCA_plot(
@@ -699,7 +558,6 @@ if __name__ == "__main__":
     if args.cluster_heatmap:
         g = styled_heatmap(activity_df, outdir=outdir, row_group_size = 1)        
         plt.show()
-    quit()
 
     # Convert the 'title' column to RDKit Mol objects
     mol_list = [AllChem.AddHs(AllChem.MolFromInchi(s)) for s in tqdm(activity_df.index, desc="Converting InChIs to RDKit Mol objects")]

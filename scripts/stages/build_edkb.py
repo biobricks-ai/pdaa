@@ -8,6 +8,7 @@ import pandas as pd
 from rdkit import Chem
 from tqdm import tqdm
 sys.path.append('./')
+from stages.utils.pdaa import smiles_is_phthalate
 
 outdir = Path('cache/zinc_phthalates')
 tempdir = outdir / 'temp'
@@ -24,9 +25,7 @@ def process_file_with_index(index_parquet_file_tuple):
         # substructure = Chem.MolFromSmiles('OC(=O)C1=CC=CC=C1C(=O)O')
 
         # Filter for phthalates
-        df['phthalate'] = df['smiles'].apply(
-            lambda x: smiles_is_phthalate(x)
-        )
+        df['phthalate'] = df['smiles'].apply(smiles_is_phthalate)
         phthalates_df = df[df['phthalate'] == True]  # Explicit boolean comparison
         
         # Save intermediate results if we found any phthalates

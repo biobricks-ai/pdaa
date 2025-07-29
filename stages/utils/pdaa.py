@@ -407,6 +407,32 @@ def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1
             return True
     return False
 
+def is_true_phthalate(mol, *, check_elements=True, valid_num_rings=[1]):
+    return is_phthalate(mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate"),
+                        check_elements=check_elements, valid_num_rings=valid_num_rings)
+
+def smiles_is_phthalate(smiles, *, check_elements=True, valid_num_rings=[1]):
+    """
+    Check if a SMILES string represents a phthalate.
+
+    Parameters
+    ----------
+    smiles : str
+        SMILES representation of the molecule.
+    check_elements : bool
+        If True, check that all atoms are C, H, or O.
+    valid_num_rings : list[int] | None
+        If not None, check that the number of rings in the molecule is in this list.
+
+    Returns
+    -------
+    bool
+        True if the SMILES represents a phthalate.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return False
+    return is_true_phthalate(mol, check_elements=check_elements, valid_num_rings=valid_num_rings)
 
 def longest_carbon_backbone(mol: Chem.Mol) -> int:
     """
