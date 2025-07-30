@@ -376,7 +376,8 @@ if __name__ == "__main__":
         # # predict using test/train split
         # score_classifier(X_train, X_test, y_train, y_test)
         # predict on entire dataset
-        print("Random Forest Classifier:")
-        rf_score_classifier(X_descriptors, X_descriptors, y_binary, y_binary)
+        # print("Random Forest Classifier:")
+        # rf_score_classifier(X_descriptors, X_descriptors, y_binary, y_binary)
         print("Logistic Regression Classifier:")
         logistic_score_classifier(X_descriptors, X_descriptors, y_binary, y_binary)
+        # logistic_score_classifier(X_train, X_test, y_train, y_test)
