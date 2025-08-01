@@ -121,6 +121,29 @@ def predict_all_properties_with_sqlite_cache(inchi_list):
 
     return preds
 
+def predict_all_properties_with_sqlite_cache_parallel(inchi_list):
+    import concurrent.futures
+
+    missing_inchi = is_missing(inchi_list)
+    preds = []
+
+    def predict_one(inchi):
+        return chemprop.chemprop_predict_all(inchi)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(tqdm(executor.map(predict_one, missing_inchi), total=len(missing_inchi), desc="Predicting missing InChIs (parallel)"))
+        for res in results:
+            preds.extend(res)
+
+    preds = [(fullpred['inchi'], int(fullpred['property_token']), fullpred['value']) for fullpred in preds]
+    add_predictions(preds, sqlite_lock)
+
+    non_missing_inchi = [inchi for inchi in inchi_list if inchi not in missing_inchi]
+    for tok in tqdm(proptoken_uris['token'], desc="Predicting non-missing InChIs"):
+        preds.extend(lookup_predictions([(inchi, tok) for inchi in non_missing_inchi]))
+
+    return preds
+
 async def async_predict(inchi,tok,semaphore):
     async with semaphore:
         result = await chemprop.get_chemprop_prediction_async(inchi=inchi, property_token=tok)

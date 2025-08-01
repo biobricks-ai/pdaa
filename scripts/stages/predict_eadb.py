@@ -1,3 +1,4 @@
+# from math import ceil
 import numpy as np
 import pandas as pd
 
@@ -13,13 +14,79 @@ import stages.utils.pdaa as pdaa
 import stages.utils.sparql as sparql
 import sqlite3
 
+from tenacity import RetryError
+import random
+
 resourcedir = Path('resources')
 cachedir = Path('cache/eadb')
 eadb_parquet = cachedir / 'eadb.parquet'
 eadb = pd.read_parquet(eadb_parquet)
 
 # performs predictions and saves them to a SQLite database (no return value needed)
-pdaa.predict_all_properties_with_sqlite_cache(eadb['inchi'].unique())
+# chunk size is set to 100 to output rows to the SQLite database more frequently
+def get_chunks(iterable, chunk_size=100):
+    """Yield successive n-sized chunks from iterable."""
+    for i in range(0, len(iterable), chunk_size):
+        yield iterable[i:i + chunk_size]
+
+failed_inchis_file = cachedir / 'failed_inchis.txt'
+if failed_inchis_file.exists():
+    print(f"Found {failed_inchis_file} with failed InChIs. Loading them...")
+    with open(failed_inchis_file) as f:
+        inchi_list = [line.strip() for line in f if line.strip()]
+
+    chunk_size = 1  # retry each InChI individually
+
+else:
+    chunk_size = 16
+    inchi_list = eadb['inchi'].unique().tolist()
+
+# remove any None values from the list
+inchi_list = [inchi for inchi in inchi_list if inchi != 'None']
+# shuffle the list to see if specific InChIs are causing issues
+# this is useful for debugging, but can be removed in production
+random.shuffle(inchi_list)
+
+# retry loop because the first run may fail due to a timeout
+# import time
+# max_retries = 15
+# while True:
+#     random.shuffle(inchi_list)
+#     try:
+#         with tqdm(total=len(inchi_list), desc="Predicting properties") as pbar:
+#             # for chunk in tqdm(get_chunks(inchi_list, chunk_size), desc="Predicting properties in chunks", total=ceil(len(inchi_list)/chunk_size)):
+#             for chunk in get_chunks(inchi_list, chunk_size):
+#                 # pdaa.predict_all_properties_with_sqlite_cache(chunk)
+#                 pdaa.predict_all_properties_with_sqlite_cache_parallel(chunk)
+#                 pbar.update(len(chunk))  # usually chunk_size, but can be less for the last chunk
+#         break
+#     except RetryError as e:
+#         max_retries -= 1
+#         if max_retries <= 0:
+#             print("Max retries reached. Exiting.")
+#             raise e
+#         print(f"Retrying due to error: {e}\n\n\n\n")
+#         time.sleep(5)  # wait before retrying
+
+
+failed_inchis = []
+with tqdm(total=len(inchi_list), desc="Predicting properties") as pbar:
+    # for chunk in tqdm(get_chunks(inchi_list, chunk_size), desc="Predicting properties in chunks", total=ceil(len(inchi_list)/chunk_size)):
+        for chunk in get_chunks(inchi_list, chunk_size):
+            try:
+                # pdaa.predict_all_properties_with_sqlite_cache_parallel(chunk)
+                pdaa.predict_all_properties_with_sqlite_cache(chunk)
+            except RetryError as e:
+                print(f"RetryError: {e}. Skipping chunk.")
+                failed_inchis.extend(chunk)
+                
+            pbar.update(len(chunk))  # usually chunk_size, but may be less for the last chunk
+            
+if failed_inchis:
+    print(f"Failed to predict properties for {len(failed_inchis)} InChIs. Saving to 'failed_inchis.txt'.")
+    with open(cachedir / 'failed_inchis.txt', 'w') as f:
+        for inchi in failed_inchis:
+            f.write(f"{inchi}\n")
 
 tqdm.pandas()
 
@@ -118,11 +185,14 @@ def build_substance_ice_activity_df(mask_method = 'prediction'):
     inchi_mol_df['mol'] = inchi_mol_df['inchi'].progress_apply(lambda x: Chem.MolFromInchi(x))
     df2 = df.merge(inchi_mol_df, on='inchi')
 
-    def in_eadb(m):
-        return any(eadb.inchi.isin([Chem.MolToInchi(m)]))
+    # def in_eadb(m):
+    #     return any(eadb.inchi.isin([Chem.MolToInchi(m)]))
+    def in_eadb(inchi):
+        return any(eadb.inchi.isin([inchi]))
 
     print("Filtering for EADB substances...")
-    filtered_substances = inchi_mol_df[inchi_mol_df['mol'].progress_apply(in_eadb)]['inchi']
+    # filtered_substances = inchi_mol_df[inchi_mol_df['mol'].progress_apply(in_eadb)]['inchi']
+    filtered_substances = inchi_mol_df[inchi_mol_df['inchi'].progress_apply(in_eadb)]['inchi']
     df3 = df2[df2['inchi'].isin(filtered_substances)]
     # Ensure both columns are of the same type (int)
     df3.loc[:, 'property_token'] = df3['property_token'].astype(int)

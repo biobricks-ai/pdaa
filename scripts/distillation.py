@@ -21,6 +21,8 @@ from scripts.utils.helpers import (
     smiles_to_inchi,
     remove_high_vif_descriptors,
     inchis_to_morgan_df,
+    kmeans_clustering,
+    Gaussian_mixture_clustering,
 )
 
 def load_edkb(path: Path, activity_field: str):
@@ -262,45 +264,10 @@ if __name__ == "__main__":
         plt.show()
 
     if args.clustering:
-        # Binary classification of the log RBA values using k-means clustering
-        from sklearn.cluster import KMeans
-        from sklearn.metrics import silhouette_score
-
-        def kmeans_clustering(X, y, *, n_clusters=2, print_tag=''):
-            km_desc = Pipeline([
-                ('scale', StandardScaler()),      # z‑score columns
-                ('k',     KMeans(n_clusters=n_clusters, n_init=30, init='k-means++', random_state=0))
-            ])
-
-            cluster_labels = km_desc.fit_predict(X)
-            print('Silhouette', print_tag + ':',
-                silhouette_score(X, cluster_labels))
-
-            # Visual sanity‑check: does one cluster skew toward low log RBA?
-            df = pd.DataFrame({'logRBA': y, 'cluster': cluster_labels})
-            print(df.groupby('cluster')['logRBA'].describe())
-
-        def Gaussian_mixture_clustering(X, y, *, n_components=2, print_tag=''):
-            from sklearn.mixture import GaussianMixture
-            pipe = Pipeline([
-                ('scale', StandardScaler(with_mean=False)),   # keep sparsity structure
-                ('gmm',  GaussianMixture(
-                            n_components=n_components,
-                            covariance_type='diag',
-                            random_state=0,
-                            init_params='kmeans',
-                            weights_init=[0.5, 0.5]))          # <-- forces 50 / 50 prior
-            ])
-
-            cluster_labels = pipe.fit_predict(X)
-            print('Silhouette', print_tag + ':',
-                silhouette_score(X, cluster_labels))
-
-            # Visual sanity‑check: does one cluster skew toward low log RBA?
-            df = pd.DataFrame({'logRBA': y, 'cluster': cluster_labels})
-            print(df.groupby('cluster')['logRBA'].describe())
 
         from sklearn_extra.cluster import KMeansConstrained  # pip install scikit-learn-extra
+        from sklearn.metrics import silhouette_score
+
         def balanced_kmeans_clustering(X, y, *, n_clusters=2,
                                     size_min=50, size_max=300,
                                     print_tag=''):
@@ -316,9 +283,6 @@ if __name__ == "__main__":
             print('Silhouette', print_tag + ':', silhouette_score(X, labels))
             df = pd.DataFrame({'logRBA': y, 'cluster': labels})
             print(df.groupby('cluster')['logRBA'].describe())
-
-        # kmeans_clustering(X_activity, y, print_tag='(activity matrix)')
-        # kmeans_clustering(X_descriptors, y, print_tag='(descriptors)')
 
         fp_df = inchis_to_morgan_df(X_descriptors)
         kmeans_clustering(fp_df, y, print_tag='(fingerprints, k-means)')

@@ -8,6 +8,11 @@ from skmisc.loess import loess               # pip install scikit-misc
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA               # Principal Component Analysis
 
+from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import silhouette_score
+from sklearn.pipeline import Pipeline
+
 from rdkit.Chem import (
     AllChem,
     Descriptors,
@@ -250,7 +255,11 @@ def get_linear_model(X: pd.DataFrame, Y: pd.DataFrame):
     
     # from sklearn.metrics import r2_score
 
-    y_mean = Y.mean(axis=1)
+    if Y.ndim > 1:
+        y_mean = Y.mean(axis=1)
+    else:
+        y_mean = Y
+
     y_mean_z = (y_mean - y_mean.mean()) / y_mean.std()  # z-score the mean activity
     X_lin = sm.add_constant(X)              # X came from z_scale_df(descriptor_df)
     ols = sm.OLS(y_mean_z, X_lin).fit()
@@ -777,3 +786,82 @@ def inchis_to_morgan_df(
         columns=[f'fp_{i}' for i in range(n_bits)],
         dtype=np.uint8,
     )
+
+def perform_clustering(X, y, *, method='kmeans', n=2, print_tag='', var_name='logRBA', with_mean=True, plot_clusters=False):
+    if method == 'kmeans':
+        kwargs = {
+            'k': KMeans(n_clusters=n, n_init=30, init='k-means++', random_state=0)
+        }
+    elif method == 'gmm':
+        kwargs = {
+            'gmm': GaussianMixture(
+                n_components=n,
+                covariance_type='diag',
+                random_state=0,
+                init_params='kmeans',
+                weights_init=[0.5, 0.5]                # <-- forces 50 / 50 prior
+            )
+        }
+    else:
+        raise ValueError(f"Unknown clustering method: {method}")
+    
+    pipe = general_pipe(kwargs, with_mean=with_mean)
+    general_clustering(pipe, X, y, print_tag=print_tag, var_name=var_name, plot_clusters=plot_clusters)
+
+# convencience functions for clustering
+def kmeans_clustering(X, y, *, n_clusters=2, print_tag='', var_name='logRBA', with_mean=True, plot_clusters=False):
+    perform_clustering(X, y, method='kmeans', n=n_clusters, print_tag=print_tag, var_name=var_name, with_mean=with_mean, plot_clusters=plot_clusters)
+def Gaussian_mixture_clustering(X, y, *, n_components=2, print_tag='', var_name='logRBA', with_mean=False, plot_clusters=False):
+    perform_clustering(X, y, method='gmm', n=n_components, print_tag=print_tag, var_name=var_name, with_mean=with_mean, plot_clusters=plot_clusters)
+
+def general_pipe(kwargs, *, with_mean=True):
+    """
+    General function to create a pipeline for clustering.
+    """
+    steps = [('scale', StandardScaler(with_mean=with_mean))]   # if False, keep sparsity structure
+    steps.extend(kwargs.items())
+    pipe = Pipeline(steps)
+    
+    return pipe
+
+def general_clustering(pipe, X, y, *, print_tag='', var_name='logRBA', plot_clusters=False):
+    """
+    General clustering function that can be used with any clustering pipeline.
+    """
+    cluster_labels = pipe.fit_predict(X)
+    print('Silhouette', print_tag + ':',
+        silhouette_score(X, cluster_labels))
+
+    # Visual sanity‑check: does one cluster skew toward low log RBA?
+    df = pd.DataFrame({var_name: y, 'cluster': cluster_labels})
+    print(df.groupby('cluster')[var_name].describe())
+
+    # if plot_clusters:
+    #     _, ax = plt.subplots(figsize=(10, 6))
+    #     sns.scatterplot(
+    #         x=X.iloc[:, 0], y=X.iloc[:, 1],
+    #         hue=cluster_labels, palette='viridis',
+    #         ax=ax, s=50, alpha=0.7, edgecolor='w'
+    #     )
+    #     ax.set_title(f'Clustering with {print_tag} labels')
+    #     ax.set_xlabel(X.columns[0])
+    #     ax.set_ylabel(X.columns[1])
+    #     plt.legend(title='Cluster', loc='upper right')
+    #     plt.tight_layout()
+    #     plt.show()
+    if plot_clusters:
+        # Use PCA to reduce X to two components for plotting
+        pca = PCA(n_components=2, random_state=0)
+        X_pca = pca.fit_transform(X)
+        _, ax = plt.subplots(figsize=(10, 6))
+        sns.scatterplot(
+            x=X_pca[:, 0], y=X_pca[:, 1],
+            hue=cluster_labels, palette='viridis',
+            ax=ax, s=50, alpha=0.7, edgecolor='w'
+        )
+        ax.set_title(f'Clustering with {print_tag} labels (PCA axes)')
+        ax.set_xlabel('PC1')
+        ax.set_ylabel('PC2')
+        plt.legend(title='Cluster', loc='upper right')
+        plt.tight_layout()
+        plt.show()

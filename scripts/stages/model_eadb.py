@@ -3,6 +3,7 @@ import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 import statsmodels.api as sm
+import matplotlib.pyplot as plt
 
 from rdkit.Chem import AllChem, Descriptors, Descriptors3D
 
@@ -14,10 +15,11 @@ from scripts.utils.helpers import (
     get_descriptors,
     compute_vifs,
     PCA_plot,
-    plot_activity_features,
-    pca_variance_ratio,
     remove_high_vif_descriptors,
+    kmeans_clustering,
+    Gaussian_mixture_clustering,
 )
+
 
 cachedir = Path('cache/eadb')
 activity_df = pd.read_parquet(cachedir / 'activity_matrix_filled.parquet')
@@ -89,8 +91,94 @@ index_intersection = activity_df.index.intersection(log_rba.index)
 X = activity_df.loc[index_intersection]
 y = log_rba.loc[index_intersection, 'logRBA']
 
-# Fit a linear regression model
-print("Fitting linear regression model...")
-ols = get_linear_model(X, y)
+def get_PCA():
+    # Perform PCA on the activity matrix and print the explained variance
+    print("Performing PCA on the activity matrix...")
+    from sklearn.decomposition import PCA 
+    pca = PCA(n_components=50, random_state=0)
+    X_pca = pca.fit_transform(X)
+    # print the explained variance by component
+    # print("Explained variance by PCA components:", pca.explained_variance_ratio_)
+    # print("Cumulative explained variance by PCA components:", np.cumsum(pca.explained_variance_ratio_))
+    # plot the PCA explained variance
+    import matplotlib.pyplot as plt
+    plt.plot(range(1, len(pca.explained_variance_ratio_) + 1), pca.explained_variance_ratio_, marker='o')
+    plt.plot(range(1, len(pca.explained_variance_ratio_) + 1), np.cumsum(pca.explained_variance_ratio_), marker='s')
+    plt.show()
 
-# Use k-means clustering, attempting to distinguish between high and low RBA
+def get_histogram():
+    # show a histogram of the logRBA values
+    print("Plotting histogram of logRBA values...")
+
+    plt.hist(y, bins=50, edgecolor='black',)
+    plt.xlabel('logRBA')
+    plt.ylabel('Frequency')
+    plt.title('Histogram of logRBA Values')
+    plt.show()
+
+def get_linear():
+    # Fit a linear regression model
+    print("Fitting linear regression model...")
+    ols = get_linear_model(X, y)
+
+# get_linear()
+
+def get_clusters():
+    # Use k-means clustering, attempting to distinguish between high and low RBA
+    kmeans_clustering(X, y, n_clusters=2, plot_clusters=True)
+    # Gaussian_mixture_clustering(X, y, n_components=2, plot_clusters=True)  # not performing as well as k-means
+
+
+y_binary = (y > 0).astype(int)  # 1 for high RBA, 0 for low RBA
+print(np.mean(y_binary ))
+sys.exit(0)
+
+# construct a binary model for high vs low RBA
+def get_binary_model():
+    # Fit a logistic regression model
+    print("Fitting logistic regression model...")
+    logit_model = sm.Logit(y_binary, X).fit(disp=0)
+
+    # Print the summary of the model
+    print(logit_model.summary())
+    
+    return logit_model
+
+get_binary_model()
+
+
+def get_decision_tree_model():
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.model_selection import StratifiedKFold, cross_validate
+    import numpy as np
+
+    print("Fitting decision tree model with 5-fold stratified cross-validation...")
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+    dt_model = DecisionTreeClassifier(random_state=0)
+
+    cv_results = cross_validate(
+        dt_model,
+        X,
+        y_binary,
+        cv=cv,
+        scoring=['accuracy', 'roc_auc'],
+        return_estimator=True,
+        n_jobs=-1,
+    )
+
+    print(f"Mean CV accuracy: {cv_results['test_accuracy'].mean():.3f} ± {cv_results['test_accuracy'].std():.3f}")
+    print(f"Mean CV ROC-AUC: {cv_results['test_roc_auc'].mean():.3f} ± {cv_results['test_roc_auc'].std():.3f}")
+
+    # Select the model with the best ROC-AUC
+    best_idx = np.argmax(cv_results['test_roc_auc'])
+    best_model = cv_results['estimator'][best_idx]
+
+    # Print feature importances from the best fold
+    feature_importances = pd.Series(best_model.feature_importances_, index=X.columns)
+    print("Top feature importances (best fold):")
+    print(feature_importances.sort_values(ascending=False)[:10])
+
+    return best_model
+
+
+get_decision_tree_model()
