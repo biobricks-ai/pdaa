@@ -252,11 +252,9 @@ def get_random_forest_regressor_feature_selection(
     best_model : RandomForestRegressor
         Estimator from the CV fold with the best R².
     """
-    from sklearn.pipeline import Pipeline
-    from sklearn.feature_selection import SelectKBest, f_regression
+    from sklearn.feature_selection import f_regression
     from sklearn.ensemble import RandomForestRegressor
-    from sklearn.model_selection import KFold, cross_validate
-    import numpy as np
+    from sklearn.model_selection import KFold
 
     # ----- pick feature matrix -----
     if transform_type == '':
@@ -307,9 +305,126 @@ def get_random_forest_regressor_feature_selection(
     best_model = cv_results['estimator'][best_idx]
     return best_model
 
-get_random_forest_regressor_feature_selection(
-    transform_type='binary',
-    k=154,
-    n_estimators=200,
-    max_depth=None,
-)
+# get_random_forest_regressor_feature_selection(
+#     transform_type='binary',
+#     k=154,
+#     n_estimators=200,
+#     max_depth=None,
+# )
+
+def get_xgb_classifier_feature_selection(
+    transform_type: str = '',
+    k: int = 154,
+    n_iter: int = 30,
+    random_state: int = 0,
+):
+    """
+    Extreme Gradient Boosting (binary classification) with MI feature selection
+    and nested cross-validation hyper-parameter optimisation.
+
+    Parameters
+    ----------
+    transform_type : str
+        '', 'z_scale', or 'binary':  same semantics as earlier helpers.
+    k : int
+        Number of top mutual-information features to keep.
+    n_iter : int
+        Number of RandomizedSearchCV trials per inner CV.
+    random_state : int
+        RNG seed for full reproducibility.
+
+    Returns
+    -------
+    best_model : xgboost.XGBClassifier
+        Best estimator found across outer CV folds.
+    """
+    from sklearn.feature_selection import mutual_info_classif
+    from sklearn.model_selection import RandomizedSearchCV
+    from xgboost import XGBClassifier
+    import warnings
+
+    # ---- pick feature matrix ----
+    if transform_type == '':
+        X_trans = X
+    elif transform_type == 'z_scale':
+        X_trans = z_scale_df(X)
+    elif transform_type == 'binary':
+        X_trans = (X > 0.5).astype(int)
+    else:
+        raise ValueError(f"Unknown transform type: {transform_type}")
+
+    # ---- base pipeline ----
+    base_pipe = Pipeline([
+        ("filter_mi", SelectKBest(mutual_info_classif, k=k)),
+        ("clf", XGBClassifier(
+            objective='binary:logistic',
+            eval_metric='logloss',      # needed to silence deprecation warnings
+            tree_method='hist',         # fast histogram-based split finding
+            use_label_encoder=False,
+            random_state=random_state,
+            n_jobs=-1,
+        )),
+    ])
+
+    # ---- hyper-parameter space (lists work fine for RandomizedSearchCV) ----
+    param_dist = {
+        'clf__n_estimators':       [300, 500, 800, 1000],
+        'clf__max_depth':         [3, 4, 5, 6, 7],
+        'clf__learning_rate':     [0.01, 0.03, 0.05, 0.1],
+        'clf__subsample':         [0.7, 0.8, 0.9, 1.0],
+        'clf__colsample_bytree':  [0.6, 0.8, 1.0],
+        'clf__gamma':             [0, 0.1, 0.25, 1],
+        'clf__min_child_weight':  [1, 3, 5, 10],
+    }
+
+    # ---- nested CV ----
+    inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
+    search = RandomizedSearchCV(
+        estimator=base_pipe,
+        param_distributions=param_dist,
+        n_iter=n_iter,
+        cv=inner_cv,
+        scoring='roc_auc',
+        n_jobs=-1,
+        verbose=1,
+        random_state=random_state,
+    )
+
+    outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)  # silence fit/predict_proba overlap msgs
+        cv_results = cross_validate(
+            search,
+            X_trans,
+            y_binary,
+            cv=outer_cv,
+            scoring=['accuracy', 'roc_auc'],
+            return_estimator=True,
+            n_jobs=-1,
+        )
+
+    mean_acc  = cv_results['test_accuracy'].mean()
+    std_acc   = cv_results['test_accuracy'].std()
+    mean_auc  = cv_results['test_roc_auc'].mean()
+    std_auc   = cv_results['test_roc_auc'].std()
+
+    print(f"Mean CV accuracy: {mean_acc:.3f} ± {std_acc:.3f}")
+    print(f"Mean CV ROC-AUC: {mean_auc:.3f} ± {std_auc:.3f}")
+
+    # ---- pull the best outer-fold model ----
+    best_idx   = np.argmax(cv_results['test_roc_auc'])
+    best_model = cv_results['estimator'][best_idx].best_estimator_
+
+    # Optional: inspect its top feature importances
+    importances = best_model.named_steps['clf'].feature_importances_
+    kept_feats  = best_model.named_steps['filter_mi'].get_feature_names_out(X_trans.columns)
+    imp_series  = (pd.Series(importances, index=kept_feats)
+                     .sort_values(ascending=False)
+                     .head(20))
+    print("Top 20 features (best outer fold):")
+    print(imp_series)
+
+    return best_model
+
+
+get_xgb_classifier_feature_selection()
