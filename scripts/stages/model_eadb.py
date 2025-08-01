@@ -7,6 +7,12 @@ import matplotlib.pyplot as plt
 
 from rdkit.Chem import AllChem, Descriptors, Descriptors3D
 
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import StratifiedKFold, cross_validate
+
+from sklearn.pipeline import Pipeline
+from sklearn.feature_selection import SelectKBest, mutual_info_classif
+
 import sys
 sys.path.append('./')  # so utility scripts can be found
 from scripts.utils.helpers import (
@@ -130,8 +136,7 @@ def get_clusters():
 
 
 y_binary = (y > 0).astype(int)  # 1 for high RBA, 0 for low RBA
-print(np.mean(y_binary ))
-sys.exit(0)
+print(f"{100*np.mean(y_binary ):.2f}% of substances have high RBA (logRBA > 0)\n")
 
 # construct a binary model for high vs low RBA
 def get_binary_model():
@@ -144,14 +149,9 @@ def get_binary_model():
     
     return logit_model
 
-get_binary_model()
-
+# get_binary_model()
 
 def get_decision_tree_model():
-    from sklearn.tree import DecisionTreeClassifier
-    from sklearn.model_selection import StratifiedKFold, cross_validate
-    import numpy as np
-
     print("Fitting decision tree model with 5-fold stratified cross-validation...")
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
     dt_model = DecisionTreeClassifier(random_state=0)
@@ -181,4 +181,135 @@ def get_decision_tree_model():
     return best_model
 
 
-get_decision_tree_model()
+# get_decision_tree_model()
+
+def get_decision_tree_model_feature_selection(
+    transform_type='',
+):
+    pipe = Pipeline([
+        ("filter_mi", SelectKBest(mutual_info_classif, k=154)),  # tune k
+        ("clf", DecisionTreeClassifier(random_state=0)),
+    ])
+
+    if transform_type == '':
+        X_scaled = X
+    elif transform_type == 'z_scale':
+        X_scaled = z_scale_df(X)
+    elif transform_type == 'binary':
+        X_scaled = X > 0.5
+    else:
+        raise ValueError(f"Unknown transform type: {transform_type}")
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+    cv_results = cross_validate(
+        pipe,
+        X_scaled,
+        y_binary,
+        cv=cv,
+        scoring=['accuracy', 'roc_auc'],
+        n_jobs=-1
+    )
+    print("Results for Decision Tree with feature selection:")
+    print(f"\tMean CV accuracy: {cv_results['test_accuracy'].mean():.3f} ± {cv_results['test_accuracy'].std():.3f}")
+    print(f"\tMean CV ROC-AUC: {cv_results['test_roc_auc'].mean():.3f} ± {cv_results['test_roc_auc'].std():.3f}")
+    
+    # # Select the model with the best ROC-AUC
+    # best_idx = np.argmax(cv_results['test_roc_auc'])
+    # best_model = cv_results['estimator'][best_idx]
+
+    # # Print feature importances from the best fold
+    # feature_importances = pd.Series(best_model.feature_importances_, index=X.columns)
+    # print("\n\tTop feature importances (best fold):")
+    # for f, i in feature_importances.sort_values(ascending=False)[:10].index:
+    #     print(f"\t{f}: {i:.4f}")
+
+get_decision_tree_model_feature_selection(
+    transform_type='',
+)
+
+def get_random_forest_regressor_feature_selection(
+    transform_type='',
+    k=154,  # number of top features to keep
+    n_estimators=200,
+    max_depth=None,
+):
+    """
+    Train a RandomForestRegressor with optional feature selection and data transform.
+
+    Parameters
+    ----------
+    transform_type : str
+        '', 'z_scale', or 'binary'  (same semantics as your decision-tree helper)
+    k : int
+        Number of top features to keep with SelectKBest(f_regression).
+    n_estimators : int
+        Number of trees in the forest.
+    max_depth : int or None
+        Maximum depth of the trees.
+
+    Returns
+    -------
+    best_model : RandomForestRegressor
+        Estimator from the CV fold with the best R².
+    """
+    from sklearn.pipeline import Pipeline
+    from sklearn.feature_selection import SelectKBest, f_regression
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import KFold, cross_validate
+    import numpy as np
+
+    # ----- pick feature matrix -----
+    if transform_type == '':
+        X_trans = X
+    elif transform_type == 'z_scale':
+        X_trans = z_scale_df(X)
+    elif transform_type == 'binary':
+        X_trans = (X > 0.5).astype(int)
+    else:
+        raise ValueError(f"Unknown transform type: {transform_type}")
+
+    # ----- build pipeline -----
+    pipe = Pipeline([
+        ("filter_f", SelectKBest(f_regression, k=k)),
+        ("rf", RandomForestRegressor(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            random_state=0,
+            n_jobs=-1,
+        )),
+    ])
+
+    # ----- cross-validate -----
+    cv = KFold(n_splits=5, shuffle=True, random_state=0)
+    cv_results = cross_validate(
+        pipe,
+        X_trans,
+        y,                        # continuous target
+        cv=cv,
+        scoring=['r2', 'neg_root_mean_squared_error'],
+        return_estimator=True,
+        n_jobs=-1,
+    )
+
+    mean_r2 = cv_results['test_r2'].mean()
+    std_r2 = cv_results['test_r2'].std()
+
+    rmse = -cv_results['test_neg_root_mean_squared_error']  # negate to get +RMSE
+    mean_rmse = rmse.mean()
+    std_rmse = rmse.std()
+
+    print("Results for RandomForestRegressor with feature selection:")
+    print(f"\tMean CV R²:   {mean_r2:.3f} ± {std_r2:.3f}")
+    print(f"\tMean CV RMSE: {mean_rmse:.3f} ± {std_rmse:.3f}")
+
+    # ----- return best model -----
+    best_idx = np.argmax(cv_results['test_r2'])
+    best_model = cv_results['estimator'][best_idx]
+    return best_model
+
+get_random_forest_regressor_feature_selection(
+    transform_type='binary',
+    k=154,
+    n_estimators=200,
+    max_depth=None,
+)
