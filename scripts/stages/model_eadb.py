@@ -97,6 +97,19 @@ index_intersection = activity_df.index.intersection(log_rba.index)
 X = activity_df.loc[index_intersection]
 y = log_rba.loc[index_intersection, 'logRBA']
 
+def transform_X(transform_type: str = ''):
+    # ---- pick feature matrix ----
+    if transform_type == '':
+        X_trans = X
+    elif transform_type == 'z_scale':
+        X_trans = z_scale_df(X)
+    elif transform_type == 'binary':
+        X_trans = (X > 0.5).astype(int)
+    else:
+        raise ValueError(f"Unknown transform type: {transform_type}")
+    
+    return X_trans
+
 def get_PCA():
     # Perform PCA on the activity matrix and print the explained variance
     print("Performing PCA on the activity matrix...")
@@ -191,19 +204,12 @@ def get_decision_tree_model_feature_selection(
         ("clf", DecisionTreeClassifier(random_state=0)),
     ])
 
-    if transform_type == '':
-        X_scaled = X
-    elif transform_type == 'z_scale':
-        X_scaled = z_scale_df(X)
-    elif transform_type == 'binary':
-        X_scaled = X > 0.5
-    else:
-        raise ValueError(f"Unknown transform type: {transform_type}")
+    X_trans = transform_X(transform_type)
 
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
     cv_results = cross_validate(
         pipe,
-        X_scaled,
+        X_trans,
         y_binary,
         cv=cv,
         scoring=['accuracy', 'roc_auc'],
@@ -256,15 +262,7 @@ def get_random_forest_regressor_feature_selection(
     from sklearn.ensemble import RandomForestRegressor
     from sklearn.model_selection import KFold
 
-    # ----- pick feature matrix -----
-    if transform_type == '':
-        X_trans = X
-    elif transform_type == 'z_scale':
-        X_trans = z_scale_df(X)
-    elif transform_type == 'binary':
-        X_trans = (X > 0.5).astype(int)
-    else:
-        raise ValueError(f"Unknown transform type: {transform_type}")
+    X_trans = transform_X(transform_type)
 
     # ----- build pipeline -----
     pipe = Pipeline([
@@ -343,15 +341,7 @@ def get_xgb_classifier_feature_selection(
     from xgboost import XGBClassifier
     import warnings
 
-    # ---- pick feature matrix ----
-    if transform_type == '':
-        X_trans = X
-    elif transform_type == 'z_scale':
-        X_trans = z_scale_df(X)
-    elif transform_type == 'binary':
-        X_trans = (X > 0.5).astype(int)
-    else:
-        raise ValueError(f"Unknown transform type: {transform_type}")
+    X_trans = transform_X(transform_type)
 
     # ---- base pipeline ----
     base_pipe = Pipeline([
