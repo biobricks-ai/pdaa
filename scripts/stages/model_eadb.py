@@ -5,7 +5,7 @@ from tqdm import tqdm
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 
-from rdkit.Chem import AllChem, Descriptors, Descriptors3D
+from rdkit.Chem import AllChem
 
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import StratifiedKFold, cross_validate
@@ -91,6 +91,96 @@ def get_log_rba(eadb):
 
 eadb = pd.read_parquet(cachedir / 'eadb.parquet')
 log_rba = get_log_rba(eadb)
+
+def x_in_range(x, values):
+    """
+    
+    """
+    return values.quantile(0.25) <= x <= values.quantile(0.75)
+
+def process_eadb_endpoint(endpoint):
+    """
+    Process a specific EADB endpoint, cleaning and preparing the data for analysis.
+    
+    Args:
+        endpoint (str): The name of the endpoint to process.
+        
+    Returns:
+        pd.Series: Cleaned and processed values for the specified endpoint.
+    """
+    vals = eadb[eadb['EndpointName'] == endpoint]['EndpointValue']
+    vals = vals.apply(comma_remove).astype(float)
+
+    # Convert to pIC50, pKi, etc. if applicable
+    if endpoint in [
+        'Ki',
+        'IC50',
+        # 'INH',
+        # 'ED50',
+        'GI50',
+        # 'Antagonism',
+        # 'Agonism',
+        'EC50',
+        'Kd',
+        'Ka',
+        'IC30',
+        'REC10'
+    ]:
+        vals = -np.log10(vals)
+        p_conversion = True
+    else:
+        p_conversion = False
+    adj_endpoint = f"p{endpoint}" if p_conversion else endpoint
+
+    # filter out sentinel values
+    if endpoint in ['logRBA', 'logRA', 'logRE', 'logRP', 'logRPE',]:
+        vals = vals[vals > -100]
+    elif endpoint in ['Ki']:
+        vals = vals[vals > -6]
+    elif endpoint in ['INH', 'Antagonism', 'Agonism',]:
+        vals = vals[vals > 0]
+
+    vals = vals.replace([np.inf, -np.inf], np.nan)  # replace inf with NaN
+    vals = vals.dropna()  # remove NaN values
+
+    # get threhold values for conversion to binary
+    if p_conversion and x_in_range(0, vals):
+        threhold = 0
+    elif (not p_conversion) and x_in_range(50, vals):
+        threhold = 50
+    else:
+        threhold = vals.median()
+
+    return vals, adj_endpoint, threhold
+
+"""
+array(['logRBA', 'logRA', 'logRE', 'logRPP', 'logRP', 'Ki', 'IC50', 'INH',
+       'logRA10', 'ED50', 'GI50', 'Antagonism', 'Agonism', 'EC50',
+       'logRPE', 'Kd', 'Ka', 'IC30', 'REC10'], dtype=object)
+"""
+for endpoint in eadb.EndpointName.unique()[5:6]:
+    vals, adj_endpoint, _ = process_eadb_endpoint(endpoint)
+    vals.describe()  # print summary statistics
+    # # pause for user to read
+    # input(f"Press Enter to continue with histogram for {endpoint}...")
+
+    # n, bins, patches = plt.hist(
+    #     vals,
+    #     alpha=0.5
+    # )
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.ecdf(vals, label=endpoint)
+    # add horizontal line at y=0.5
+    ax.axhline(y=0.5, color='r', linestyle='--', label='Median')
+    ax.legend()
+    ax.set_xlabel(adj_endpoint)
+    # ax.set_title(f"Histogram of {endpoint} values")
+    ax.set_title(f"ECDF of {adj_endpoint} values")
+    # # Set xticks at the center of each bar
+    # plt.xticks((bins[:-1] + bins[1:]) / 2, rotation=90)
+    plt.show()
+    
 
 # make predictor and target DataFrames
 index_intersection = activity_df.index.intersection(log_rba.index)
