@@ -66,37 +66,47 @@ def characterize_descriptors():
             print(f"Warning: High VIF detected for descriptor '{descriptor}' (VIF={vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0]}). Consider removing it.")
 
 # SECTION: Make a predictive model for EADB endpoints
+eadb = pd.read_parquet(cachedir / 'eadb.parquet')
+
 def comma_remove(s):
     return s.replace(',', '')
 
-def get_log_rba(eadb):
+def get_endpoint_series(df, endpoint, *, p_conversion = False, sentinel_threshold=-10):
     # filter for logRBA endpoint
-    log_rba = eadb.loc[eadb['EndpointName'] == 'logRBA', ['inchi', 'EndpointValue']]
-    log_rba.rename(columns={'EndpointValue': 'logRBA'}, inplace=True)
+    endpoint_series = df.loc[df['EndpointName'] == endpoint, ['inchi', 'EndpointValue']]
+    endpoint_series.rename(columns={'EndpointValue': endpoint}, inplace=True)
     # set the InChI as index
-    log_rba.set_index('inchi', inplace=True)
-    log_rba = log_rba[log_rba.index.notna()]
+    endpoint_series.set_index('inchi', inplace=True)
+    endpoint_series = endpoint_series[endpoint_series.index.notna()]
     # clean the logRBA column
-    log_rba['logRBA'] = log_rba['logRBA'].apply(comma_remove)
+    endpoint_series[endpoint] = endpoint_series[endpoint].apply(comma_remove)
     # convert logRBA to numeric
-    log_rba['logRBA'] = pd.to_numeric(log_rba['logRBA'], errors='coerce')
+    endpoint_series[endpoint] = pd.to_numeric(endpoint_series[endpoint], errors='coerce')
+    # convert to pIC50, pKi, etc. if applicable
+    if p_conversion:
+        endpoint_series[endpoint] = -np.log10(endpoint_series[endpoint])
+    # replace inf with NaN
+    endpoint_series = endpoint_series.replace([np.inf, -np.inf], np.nan)
     # set sentinel values to NaN
-    log_rba[log_rba < -10] = pd.NA
+    if sentinel_threshold is not None:
+        endpoint_series[endpoint_series < sentinel_threshold] = np.nan
     # drop rows with NaN in logRBA
-    log_rba = log_rba.dropna()
+    endpoint_series = endpoint_series.dropna()
     # for duplicate InChIs, take the mean of logRBA values
-    log_rba = log_rba.groupby(log_rba.index).mean()
+    endpoint_series = endpoint_series.groupby(endpoint_series.index).mean()
 
-    return log_rba
+    return endpoint_series
 
-eadb = pd.read_parquet(cachedir / 'eadb.parquet')
-log_rba = get_log_rba(eadb)
+
+log_rba = get_endpoint_series(eadb, 'logRBA', sentinel_threshold=-10)
 
 def x_in_range(x, values):
     """
-    
+    Check if x is within the interquartile range of values.
     """
-    return values.quantile(0.25) <= x <= values.quantile(0.75)
+    q_low  = values.quantile(0.25).values
+    q_high = values.quantile(0.75).values
+    return q_low <= x <= q_high
 
 def process_eadb_endpoint(endpoint):
     """
@@ -108,8 +118,6 @@ def process_eadb_endpoint(endpoint):
     Returns:
         pd.Series: Cleaned and processed values for the specified endpoint.
     """
-    vals = eadb[eadb['EndpointName'] == endpoint]['EndpointValue']
-    vals = vals.apply(comma_remove).astype(float)
 
     # Convert to pIC50, pKi, etc. if applicable
     if endpoint in [
@@ -126,7 +134,6 @@ def process_eadb_endpoint(endpoint):
         'IC30',
         'REC10'
     ]:
-        vals = -np.log10(vals)
         p_conversion = True
     else:
         p_conversion = False
@@ -134,14 +141,15 @@ def process_eadb_endpoint(endpoint):
 
     # filter out sentinel values
     if endpoint in ['logRBA', 'logRA', 'logRE', 'logRP', 'logRPE',]:
-        vals = vals[vals > -100]
+        sentinel_threshold = -100
     elif endpoint in ['Ki']:
-        vals = vals[vals > -6]
+        sentinel_threshold = -6
     elif endpoint in ['INH', 'Antagonism', 'Agonism',]:
-        vals = vals[vals > 0]
+        sentinel_threshold = 0
+    else:
+        sentinel_threshold = None
 
-    vals = vals.replace([np.inf, -np.inf], np.nan)  # replace inf with NaN
-    vals = vals.dropna()  # remove NaN values
+    vals = get_endpoint_series(eadb, endpoint, p_conversion=p_conversion, sentinel_threshold=sentinel_threshold)
 
     # get threhold values for conversion to binary
     if p_conversion and x_in_range(0, vals):
@@ -158,28 +166,30 @@ array(['logRBA', 'logRA', 'logRE', 'logRPP', 'logRP', 'Ki', 'IC50', 'INH',
        'logRA10', 'ED50', 'GI50', 'Antagonism', 'Agonism', 'EC50',
        'logRPE', 'Kd', 'Ka', 'IC30', 'REC10'], dtype=object)
 """
-for endpoint in eadb.EndpointName.unique()[5:6]:
-    vals, adj_endpoint, _ = process_eadb_endpoint(endpoint)
-    vals.describe()  # print summary statistics
-    # # pause for user to read
-    # input(f"Press Enter to continue with histogram for {endpoint}...")
+# for endpoint in eadb.EndpointName.unique():
+#     vals, adj_endpoint, _ = process_eadb_endpoint(endpoint)
+#     print(f"Processed {endpoint} with {len(vals)} values, adjusted endpoint: {adj_endpoint}")
+    # vals.describe()  # print summary statistics
+    # # # pause for user to read
+    # # input(f"Press Enter to continue with histogram for {endpoint}...")
 
-    # n, bins, patches = plt.hist(
-    #     vals,
-    #     alpha=0.5
-    # )
+    # # n, bins, patches = plt.hist(
+    # #     vals,
+    # #     alpha=0.5
+    # # )
     
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.ecdf(vals, label=endpoint)
-    # add horizontal line at y=0.5
-    ax.axhline(y=0.5, color='r', linestyle='--', label='Median')
-    ax.legend()
-    ax.set_xlabel(adj_endpoint)
-    # ax.set_title(f"Histogram of {endpoint} values")
-    ax.set_title(f"ECDF of {adj_endpoint} values")
-    # # Set xticks at the center of each bar
-    # plt.xticks((bins[:-1] + bins[1:]) / 2, rotation=90)
-    plt.show()
+    # fig, ax = plt.subplots(figsize=(10, 6))
+    # ax.ecdf(vals, label=endpoint)
+    # # add horizontal line at y=0.5
+    # ax.axhline(y=0.5, color='r', linestyle='--', label='Median')
+    # ax.legend()
+    # ax.set_xlabel(adj_endpoint)
+    # # ax.set_title(f"Histogram of {endpoint} values")
+    # ax.set_title(f"ECDF of {adj_endpoint} values")
+    # # # Set xticks at the center of each bar
+    # # plt.xticks((bins[:-1] + bins[1:]) / 2, rotation=90)
+    # plt.show()
+
     
 
 # make predictor and target DataFrames
@@ -187,7 +197,7 @@ index_intersection = activity_df.index.intersection(log_rba.index)
 X = activity_df.loc[index_intersection]
 y = log_rba.loc[index_intersection, 'logRBA']
 
-def transform_X(transform_type: str = ''):
+def transform_X(X, transform_type: str = ''):
     # ---- pick feature matrix ----
     if transform_type == '':
         X_trans = X
@@ -294,7 +304,7 @@ def get_decision_tree_model_feature_selection(
         ("clf", DecisionTreeClassifier(random_state=0)),
     ])
 
-    X_trans = transform_X(transform_type)
+    X_trans = transform_X(X, transform_type)
 
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
     cv_results = cross_validate(
@@ -352,7 +362,7 @@ def get_random_forest_regressor_feature_selection(
     from sklearn.ensemble import RandomForestRegressor
     from sklearn.model_selection import KFold
 
-    X_trans = transform_X(transform_type)
+    X_trans = transform_X(X, transform_type)
 
     # ----- build pipeline -----
     pipe = Pipeline([
@@ -401,6 +411,9 @@ def get_random_forest_regressor_feature_selection(
 # )
 
 def get_xgb_classifier_feature_selection(
+    X: pd.DataFrame,
+    y_binary: pd.Series,
+    *,
     transform_type: str = '',
     k: int = 154,
     n_iter: int = 30,
@@ -431,7 +444,7 @@ def get_xgb_classifier_feature_selection(
     from xgboost import XGBClassifier
     import warnings
 
-    X_trans = transform_X(transform_type)
+    X_trans = transform_X(X, transform_type)
 
     # ---- base pipeline ----
     base_pipe = Pipeline([
@@ -440,7 +453,7 @@ def get_xgb_classifier_feature_selection(
             objective='binary:logistic',
             eval_metric='logloss',      # needed to silence deprecation warnings
             tree_method='hist',         # fast histogram-based split finding
-            use_label_encoder=False,
+            # use_label_encoder=False,
             random_state=random_state,
             n_jobs=-1,
         )),
@@ -488,8 +501,12 @@ def get_xgb_classifier_feature_selection(
     mean_auc  = cv_results['test_roc_auc'].mean()
     std_auc   = cv_results['test_roc_auc'].std()
 
-    print(f"Mean CV accuracy: {mean_acc:.3f} ± {std_acc:.3f}")
-    print(f"Mean CV ROC-AUC: {mean_auc:.3f} ± {std_auc:.3f}")
+    metrics = f"""
+Mean CV accuracy: {mean_acc:.3f} ± {std_acc:.3f}
+Mean CV ROC-AUC: {mean_auc:.3f} ± {std_auc:.3f}
+"""
+    # print(f"Mean CV accuracy: {mean_acc:.3f} ± {std_acc:.3f}")
+    # print(f"Mean CV ROC-AUC: {mean_auc:.3f} ± {std_auc:.3f}")
 
     # ---- pull the best outer-fold model ----
     best_idx   = np.argmax(cv_results['test_roc_auc'])
@@ -501,10 +518,32 @@ def get_xgb_classifier_feature_selection(
     imp_series  = (pd.Series(importances, index=kept_feats)
                      .sort_values(ascending=False)
                      .head(20))
-    print("Top 20 features (best outer fold):")
-    print(imp_series)
+    # print("Top 20 features (best outer fold):")
+    # print(imp_series)
 
-    return best_model
+    return best_model, metrics, imp_series
 
+with open(cachedir / 'xgb_classifier_feature_selection.txt', 'w') as f:
+    for endpoint in eadb.EndpointName.unique():
+        vals, adj_endpoint, threshold = process_eadb_endpoint(endpoint)
+        
+        index_intersection = activity_df.index.intersection(vals.index)
+        X = activity_df.loc[index_intersection]
+        # y_binary = vals.loc[index_intersection] > threshold  # binary target based on threshold
+        y_binary = (vals.loc[index_intersection] > threshold).squeeze() # binary target based on threshold
 
-get_xgb_classifier_feature_selection()
+        best_model, metrics, imp_series = get_xgb_classifier_feature_selection(
+            X,
+            y_binary,
+        )
+
+        f.write("#" + "="*80 + "\n")
+        f.write(f"Processed {endpoint} with {len(vals)} values, adjusted endpoint: {adj_endpoint}\n")
+        f.write(metrics)
+        f.write("Top 20 features (best outer fold):")
+        f.write(imp_series.to_string())
+        f.write("\n\n")
+
+# get_xgb_classifier_feature_selection()
+
+    
