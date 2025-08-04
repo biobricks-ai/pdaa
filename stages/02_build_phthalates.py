@@ -8,7 +8,7 @@ import pandas as pd
 from rdkit import Chem
 from tqdm import tqdm
 sys.path.append('./')
-from stages.utils.pdaa import is_phthalate
+from stages.utils.pdaa import smiles_is_true_phthalate
 
 # TODO start moving bricks to iceberg and do this in cloud. 
 
@@ -58,17 +58,6 @@ temp_phthalates.mkdir(exist_ok=True)
 #     except:
 #         return False
 
-def smiles_is_phthalate(smiles):
-    """Check if a SMILES string corresponds to a phthalate."""
-    mol = Chem.MolFromSmiles(smiles)
-    if not mol:
-        return False
-    return is_phthalate(
-        mol,
-        modes=("ortho_phthalate", "meta_phthalate", "para_phthalate"),
-        check_elements=True
-    )
-
 # process each file from partitioned zinc 
 # output to `temp_phthalates`
 def process_file_with_index(index_parquet_file_tuple):
@@ -80,9 +69,7 @@ def process_file_with_index(index_parquet_file_tuple):
         # substructure = Chem.MolFromSmiles('OC(=O)C1=CC=CC=C1C(=O)O')
 
         # Filter for phthalates
-        df['phthalate'] = df['smiles'].apply(
-            lambda x: smiles_is_phthalate(x)
-        )
+        df['phthalate'] = df['smiles'].apply(smiles_is_true_phthalate)
         phthalates_df = df[df['phthalate'] == True]  # Explicit boolean comparison
         
         # Save intermediate results if we found any phthalates
