@@ -263,9 +263,6 @@ def get_decision_tree_model_feature_selection(
     # for f, i in feature_importances.sort_values(ascending=False)[:10].index:
     #     print(f"\t{f}: {i:.4f}")
 
-get_decision_tree_model_feature_selection(
-    transform_type='',
-)
 
 def get_random_forest_regressor_feature_selection(
     X: pd.DataFrame,
@@ -460,10 +457,6 @@ def write_xgb_classifier_feature_selection(cachedir: Path, activity_df: pd.DataF
     """
     Run XGB classifier feature selection for each EADB endpoint and write results to a file.
     """
-    
-    # Ensure the cache directory exists
-    cachedir.mkdir(parents=True, exist_ok=True)
-
     # Write results to a text file
     with open(cachedir / 'xgb_classifier_feature_selection.txt', 'w') as f:
         for endpoint in dataset.EndpointName.unique():
@@ -474,7 +467,7 @@ def write_xgb_classifier_feature_selection(cachedir: Path, activity_df: pd.DataF
             # y_binary = vals.loc[index_intersection] > threshold  # binary target based on threshold
             y_binary = (vals.loc[index_intersection] > threshold).squeeze() # binary target based on threshold
 
-            best_model, metrics, imp_series = get_xgb_classifier_feature_selection(
+            _, metrics, imp_series = get_xgb_classifier_feature_selection(
                 X,
                 y_binary,
             )
@@ -482,7 +475,7 @@ def write_xgb_classifier_feature_selection(cachedir: Path, activity_df: pd.DataF
             f.write("#" + "="*80 + "\n")
             f.write(f"Processed {endpoint} with {len(vals)} values, adjusted endpoint: {adj_endpoint}\n")
             f.write(metrics)
-            f.write("Top 20 features (best outer fold):")
+            f.write("\nTop 20 features (best outer fold):\n")
             f.write(imp_series.to_string())
             f.write("\n\n")
 
@@ -525,3 +518,8 @@ if __name__ == "__main__":
     dataset_parquet = resourcedir / f'{args.dataset}_full.parquet'
     dataset = pd.read_parquet(dataset_parquet)
 
+    write_xgb_classifier_feature_selection(
+        cachedir=cachedir,
+        activity_df=activity_df,
+        dataset=dataset,
+    )
