@@ -865,3 +865,32 @@ def general_clustering(pipe, X, y, *, print_tag='', var_name='logRBA', plot_clus
         plt.legend(title='Cluster', loc='upper right')
         plt.tight_layout()
         plt.show()
+
+def comma_remove(s):
+    return s.replace(',', '')
+
+def get_endpoint_series(df, endpoint, *, p_conversion = False, sentinel_threshold=-10):
+    # filter for desired endpoint
+    endpoint_series = df.loc[df['EndpointName'] == endpoint, ['inchi', 'EndpointValue']]
+    endpoint_series.rename(columns={'EndpointValue': endpoint}, inplace=True)
+    # set the InChI as index
+    endpoint_series.set_index('inchi', inplace=True)
+    endpoint_series = endpoint_series[endpoint_series.index.notna()]
+    # clean the endpoint column
+    endpoint_series[endpoint] = endpoint_series[endpoint].apply(comma_remove)
+    # convert endpoint values to numeric
+    endpoint_series[endpoint] = pd.to_numeric(endpoint_series[endpoint], errors='coerce')
+    # convert to pIC50, pKi, etc. if applicable
+    if p_conversion:
+        endpoint_series[endpoint] = -np.log10(endpoint_series[endpoint])
+    # replace inf with NaN
+    endpoint_series = endpoint_series.replace([np.inf, -np.inf], np.nan)
+    # set sentinel values to NaN
+    if sentinel_threshold is not None:
+        endpoint_series[endpoint_series < sentinel_threshold] = np.nan
+    # drop rows with NaN in endpoint value
+    endpoint_series = endpoint_series.dropna()
+    # for duplicate InChIs, take the mean of endpoint values
+    endpoint_series = endpoint_series.groupby(endpoint_series.index).mean()
+
+    return endpoint_series

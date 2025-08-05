@@ -15,3 +15,5 @@ blazegraph.jnl
 
 hdtworkdir/
 scratch.py
+
+*.bak

@@ -1,3 +1,4 @@
+# from math import ceil
 import numpy as np
 import pandas as pd
 
@@ -13,12 +14,83 @@ import stages.utils.pdaa as pdaa
 import stages.utils.sparql as sparql
 import sqlite3
 
+from tenacity import RetryError
+import random
+
 resourcedir = Path('resources')
-edkb_parquet = resourcedir / 'edkb_log_rba.parquet'
+cachedir = Path('cache/edkb')
+edkb_parquet = resourcedir / 'edkb_full.parquet'
 edkb = pd.read_parquet(edkb_parquet)
 
-pdaa.predict_all_properties_with_sqlite_cache(edkb['inchi'])
+# performs predictions and saves them to a SQLite database (no return value needed)
+# chunk size is set to 100 to output rows to the SQLite database more frequently
+def get_chunks(iterable, chunk_size=100):
+    """Yield successive n-sized chunks from iterable."""
+    for i in range(0, len(iterable), chunk_size):
+        yield iterable[i:i + chunk_size]
 
+failed_inchis_file = cachedir / 'failed_inchis.txt'
+if failed_inchis_file.exists():
+    print(f"Found {failed_inchis_file} with failed InChIs. Loading them...")
+    with open(failed_inchis_file) as f:
+        inchi_list = [line.strip() for line in f if line.strip()]
+
+    chunk_size = 1  # retry each InChI individually
+
+else:
+    chunk_size = 16
+    inchi_list = edkb['inchi'].unique().tolist()
+
+# remove any None values from the list
+inchi_list = [inchi for inchi in inchi_list if inchi != 'None']
+# shuffle the list to see if specific InChIs are causing issues
+# this is useful for debugging, but can be removed in production
+random.shuffle(inchi_list)
+
+# retry loop because the first run may fail due to a timeout
+# import time
+# max_retries = 15
+# while True:
+#     random.shuffle(inchi_list)
+#     try:
+#         with tqdm(total=len(inchi_list), desc="Predicting properties") as pbar:
+#             # for chunk in tqdm(get_chunks(inchi_list, chunk_size), desc="Predicting properties in chunks", total=ceil(len(inchi_list)/chunk_size)):
+#             for chunk in get_chunks(inchi_list, chunk_size):
+#                 # pdaa.predict_all_properties_with_sqlite_cache(chunk)
+#                 pdaa.predict_all_properties_with_sqlite_cache_parallel(chunk)
+#                 pbar.update(len(chunk))  # usually chunk_size, but can be less for the last chunk
+#         break
+#     except RetryError as e:
+#         max_retries -= 1
+#         if max_retries <= 0:
+#             print("Max retries reached. Exiting.")
+#             raise e
+#         print(f"Retrying due to error: {e}\n\n\n\n")
+#         time.sleep(5)  # wait before retrying
+
+
+failed_inchis = []
+with tqdm(total=len(inchi_list), desc="Predicting properties") as pbar:
+    # for chunk in tqdm(get_chunks(inchi_list, chunk_size), desc="Predicting properties in chunks", total=ceil(len(inchi_list)/chunk_size)):
+        for chunk in get_chunks(inchi_list, chunk_size):
+            try:
+                # pdaa.predict_all_properties_with_sqlite_cache_parallel(chunk)
+                pdaa.predict_all_properties_with_sqlite_cache(chunk)
+            except RetryError as e:
+                print(f"RetryError: {e}. Skipping chunk.")
+                failed_inchis.extend(chunk)
+                
+            pbar.update(len(chunk))  # usually chunk_size, but may be less for the last chunk
+            
+if failed_inchis:
+    print(f"Failed to predict properties for {len(failed_inchis)} InChIs. Saving to 'failed_inchis.txt'.")
+    with open(cachedir / 'failed_inchis.txt', 'w') as f:
+        for inchi in failed_inchis:
+            f.write(f"{inchi}\n")
+elif failed_inchis_file.exists():
+    print(f"Deleting {failed_inchis_file} as no failed InChIs were found.")
+    failed_inchis_file.unlink()
+1
 tqdm.pandas()
 
 def build_substance_ice_activity_df(mask_method = 'prediction'):
@@ -56,31 +128,9 @@ def build_substance_ice_activity_df(mask_method = 'prediction'):
             lambda ct: any(d in ct for d in dart_clean)
         )
     elif mask_method == 'prediction':
-        # def get_toxicity_mask(pred_file : str):
-        #     pred_df = pd.read_csv(pred_file, sep='\t', header=None, names=['title', 'flag'])
-        #     mask = uri_title_token['title'].apply(
-        #         lambda title: any(title.lower().startswith(f.lower()) for f in pred_df['title'].tolist())
-        #     )
-        #     return mask
-        
-        # # Efficiently create a mask of all False values using numpy
-        # mask = np.zeros(len(uri_title_token), dtype=bool)
-        # # Convert to a pandas Series to allow logical operations (&, |) with other masks
-        # mask = pd.Series(mask, index=uri_title_token.index)
 
         use_dart = True
         use_ed = True
-
-        # if use_dart:
-        #     dart_file = resourcedir / 'assay_flags2_dart.txt'
-        #     dart_mask = get_toxicity_mask(dart_file)
-        #     mask |= dart_mask
-        # if use_ed:
-        #     ed_file = resourcedir / 'assay_flags2_ed.txt'
-        #     ed_mask = get_toxicity_mask(ed_file)
-        #     mask |= ed_mask
-
-        # print(np.sum(mask), "DART/ED assays found in the database")
 
         # ----------------------------------------------------------------------
         # 1. Collect every file we should read this run
@@ -118,17 +168,9 @@ def build_substance_ice_activity_df(mask_method = 'prediction'):
 
         print(mask.sum(), "DART/ED assays found")
 
-
-        # pred_df = pd.read_csv(pred_file, sep='\t', header=None, names=['title', 'flag'])
-        # mask = uri_title_token['title'].apply(
-        #     lambda title: any(title.lower().startswith(f.lower()) for f in pred_df['title'].tolist())
-        # )
-
     ice_assays = uri_title_token[mask]
     # ice_assays = uri_title_token
     print(f"Found {len(ice_assays)} DART-filtered ICE assays")
-
-
 
     print("Fetching predictions from SQLite...")
     brickdir = Path('brick')
@@ -146,11 +188,14 @@ def build_substance_ice_activity_df(mask_method = 'prediction'):
     inchi_mol_df['mol'] = inchi_mol_df['inchi'].progress_apply(lambda x: Chem.MolFromInchi(x))
     df2 = df.merge(inchi_mol_df, on='inchi')
 
-    def in_edkb(m):
-        return any(edkb.inchi.isin([Chem.MolToInchi(m)]))
+    # def in_edkb(m):
+    #     return any(edkb.inchi.isin([Chem.MolToInchi(m)]))
+    def in_edkb(inchi):
+        return any(edkb.inchi.isin([inchi]))
 
     print("Filtering for EDKB substances...")
-    filtered_substances = inchi_mol_df[inchi_mol_df['mol'].progress_apply(in_edkb)]['inchi']
+    # filtered_substances = inchi_mol_df[inchi_mol_df['mol'].progress_apply(in_edkb)]['inchi']
+    filtered_substances = inchi_mol_df[inchi_mol_df['inchi'].progress_apply(in_edkb)]['inchi']
     df3 = df2[df2['inchi'].isin(filtered_substances)]
     # Ensure both columns are of the same type (int)
     df3.loc[:, 'property_token'] = df3['property_token'].astype(int)
@@ -161,8 +206,6 @@ def build_substance_ice_activity_df(mask_method = 'prediction'):
 
 
 substance_df = build_substance_ice_activity_df()[['uri','title','inchi','mol','positive_prediction']]
-cachedir = Path('cache/edkb')
-cachedir.mkdir(exist_ok=True)
 
 def make_activity_matrix():
     activity_matrix = substance_df.groupby(['inchi','title'])['positive_prediction'].mean().reset_index()

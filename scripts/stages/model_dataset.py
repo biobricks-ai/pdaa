@@ -1,3 +1,5 @@
+import argparse
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -20,16 +22,13 @@ from scripts.utils.helpers import (
     get_linear_model,
     get_descriptors,
     compute_vifs,
-    PCA_plot,
+    # PCA_plot,
     remove_high_vif_descriptors,
     kmeans_clustering,
-    Gaussian_mixture_clustering,
+    # Gaussian_mixture_clustering,
     get_endpoint_series,
 )
 
-
-cachedir = Path('cache/eadb')
-activity_df = pd.read_parquet(cachedir / 'activity_matrix_filled.parquet')
 
 def characterize_descriptors():
     # Convert the 'title' column to RDKit Mol objects
@@ -66,10 +65,10 @@ def characterize_descriptors():
         if vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0] > 10:
             print(f"Warning: High VIF detected for descriptor '{descriptor}' (VIF={vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0]}). Consider removing it.")
 
-# SECTION: Make a predictive model for EADB endpoints
-eadb = pd.read_parquet(cachedir / 'eadb.parquet')
+# # SECTION: Make a predictive model for EADB endpoints
+# eadb = pd.read_parquet(cachedir / 'eadb.parquet')
 
-log_rba = get_endpoint_series(eadb, 'logRBA', sentinel_threshold=-10)
+# log_rba = get_endpoint_series(eadb, 'logRBA', sentinel_threshold=-10)
 
 def x_in_range(x, values):
     """
@@ -79,7 +78,7 @@ def x_in_range(x, values):
     q_high = values.quantile(0.75).values
     return q_low <= x <= q_high
 
-def process_eadb_endpoint(endpoint):
+def process_dataset_endpoint(dataset: pd.DataFrame, endpoint: str):
     """
     Process a specific EADB endpoint, cleaning and preparing the data for analysis.
     
@@ -120,7 +119,7 @@ def process_eadb_endpoint(endpoint):
     else:
         sentinel_threshold = None
 
-    vals = get_endpoint_series(eadb, endpoint, p_conversion=p_conversion, sentinel_threshold=sentinel_threshold)
+    vals = get_endpoint_series(dataset, endpoint, p_conversion=p_conversion, sentinel_threshold=sentinel_threshold)
 
     # get threhold values for conversion to binary
     if p_conversion and x_in_range(0, vals):
@@ -132,41 +131,11 @@ def process_eadb_endpoint(endpoint):
 
     return vals, adj_endpoint, threhold
 
-"""
+""" EADB endpoints for reference:
 array(['logRBA', 'logRA', 'logRE', 'logRPP', 'logRP', 'Ki', 'IC50', 'INH',
        'logRA10', 'ED50', 'GI50', 'Antagonism', 'Agonism', 'EC50',
        'logRPE', 'Kd', 'Ka', 'IC30', 'REC10'], dtype=object)
 """
-# for endpoint in eadb.EndpointName.unique():
-#     vals, adj_endpoint, _ = process_eadb_endpoint(endpoint)
-#     print(f"Processed {endpoint} with {len(vals)} values, adjusted endpoint: {adj_endpoint}")
-    # vals.describe()  # print summary statistics
-    # # # pause for user to read
-    # # input(f"Press Enter to continue with histogram for {endpoint}...")
-
-    # # n, bins, patches = plt.hist(
-    # #     vals,
-    # #     alpha=0.5
-    # # )
-    
-    # fig, ax = plt.subplots(figsize=(10, 6))
-    # ax.ecdf(vals, label=endpoint)
-    # # add horizontal line at y=0.5
-    # ax.axhline(y=0.5, color='r', linestyle='--', label='Median')
-    # ax.legend()
-    # ax.set_xlabel(adj_endpoint)
-    # # ax.set_title(f"Histogram of {endpoint} values")
-    # ax.set_title(f"ECDF of {adj_endpoint} values")
-    # # # Set xticks at the center of each bar
-    # # plt.xticks((bins[:-1] + bins[1:]) / 2, rotation=90)
-    # plt.show()
-
-    
-
-# make predictor and target DataFrames
-index_intersection = activity_df.index.intersection(log_rba.index)
-X = activity_df.loc[index_intersection]
-y = log_rba.loc[index_intersection, 'logRBA']
 
 def transform_X(X, transform_type: str = ''):
     # ---- pick feature matrix ----
@@ -181,7 +150,7 @@ def transform_X(X, transform_type: str = ''):
     
     return X_trans
 
-def get_PCA():
+def get_PCA(X):
     # Perform PCA on the activity matrix and print the explained variance
     print("Performing PCA on the activity matrix...")
     from sklearn.decomposition import PCA 
@@ -191,39 +160,34 @@ def get_PCA():
     # print("Explained variance by PCA components:", pca.explained_variance_ratio_)
     # print("Cumulative explained variance by PCA components:", np.cumsum(pca.explained_variance_ratio_))
     # plot the PCA explained variance
-    import matplotlib.pyplot as plt
+    
     plt.plot(range(1, len(pca.explained_variance_ratio_) + 1), pca.explained_variance_ratio_, marker='o')
     plt.plot(range(1, len(pca.explained_variance_ratio_) + 1), np.cumsum(pca.explained_variance_ratio_), marker='s')
     plt.show()
 
-def get_histogram():
+def get_histogram(y: pd.Series, xlabel: str = 'logRBA'):
     # show a histogram of the logRBA values
     print("Plotting histogram of logRBA values...")
 
     plt.hist(y, bins=50, edgecolor='black',)
-    plt.xlabel('logRBA')
+    plt.xlabel(xlabel)
     plt.ylabel('Frequency')
     plt.title('Histogram of logRBA Values')
     plt.show()
 
-def get_linear():
+def get_linear(X: pd.DataFrame, y: pd.Series):
     # Fit a linear regression model
     print("Fitting linear regression model...")
     ols = get_linear_model(X, y)
+    return ols
 
-# get_linear()
-
-def get_clusters():
+def get_clusters(X: pd.DataFrame, y: pd.Series):
     # Use k-means clustering, attempting to distinguish between high and low RBA
     kmeans_clustering(X, y, n_clusters=2, plot_clusters=True)
     # Gaussian_mixture_clustering(X, y, n_components=2, plot_clusters=True)  # not performing as well as k-means
 
-
-y_binary = (y > 0).astype(int)  # 1 for high RBA, 0 for low RBA
-print(f"{100*np.mean(y_binary ):.2f}% of substances have high RBA (logRBA > 0)\n")
-
 # construct a binary model for high vs low RBA
-def get_binary_model():
+def get_binary_model(X: pd.DataFrame, y_binary: pd.Series):
     # Fit a logistic regression model
     print("Fitting logistic regression model...")
     logit_model = sm.Logit(y_binary, X).fit(disp=0)
@@ -233,9 +197,7 @@ def get_binary_model():
     
     return logit_model
 
-# get_binary_model()
-
-def get_decision_tree_model():
+def get_decision_tree_model(X: pd.DataFrame, y_binary: pd.Series):
     print("Fitting decision tree model with 5-fold stratified cross-validation...")
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
     dt_model = DecisionTreeClassifier(random_state=0)
@@ -265,9 +227,10 @@ def get_decision_tree_model():
     return best_model
 
 
-# get_decision_tree_model()
-
 def get_decision_tree_model_feature_selection(
+    X: pd.DataFrame,
+    y_binary: pd.Series,
+    *,
     transform_type='',
 ):
     pipe = Pipeline([
@@ -305,6 +268,9 @@ get_decision_tree_model_feature_selection(
 )
 
 def get_random_forest_regressor_feature_selection(
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
     transform_type='',
     k=154,  # number of top features to keep
     n_estimators=200,
@@ -374,19 +340,12 @@ def get_random_forest_regressor_feature_selection(
     best_model = cv_results['estimator'][best_idx]
     return best_model
 
-# get_random_forest_regressor_feature_selection(
-#     transform_type='binary',
-#     k=154,
-#     n_estimators=200,
-#     max_depth=None,
-# )
-
 def get_xgb_classifier_feature_selection(
     X: pd.DataFrame,
     y_binary: pd.Series,
     *,
     transform_type: str = '',
-    k: int = 154,
+    k: int | None = None,
     n_iter: int = 30,
     random_state: int = 0,
 ):
@@ -416,6 +375,9 @@ def get_xgb_classifier_feature_selection(
     import warnings
 
     X_trans = transform_X(X, transform_type)
+
+    if k is None:
+        k = X.shape[1]  # keep all features if k is not specified
 
     # ---- base pipeline ----
     base_pipe = Pipeline([
@@ -468,13 +430,13 @@ def get_xgb_classifier_feature_selection(
         )
 
     mean_acc  = cv_results['test_accuracy'].mean()
-    std_acc   = cv_results['test_accuracy'].std()
+    std_err_acc = cv_results['test_accuracy'].std(ddof=1) / np.sqrt(len(cv_results['test_accuracy']))
     mean_auc  = cv_results['test_roc_auc'].mean()
-    std_auc   = cv_results['test_roc_auc'].std()
+    std_err_auc = cv_results['test_roc_auc'].std(ddof=1) / np.sqrt(len(cv_results['test_roc_auc']))
 
     metrics = f"""
-Mean CV accuracy: {mean_acc:.3f} ± {std_acc:.3f}
-Mean CV ROC-AUC: {mean_auc:.3f} ± {std_auc:.3f}
+Mean CV accuracy: {mean_acc:.3f} ± {std_err_acc:.3f} (SE)
+Mean CV ROC-AUC: {mean_auc:.3f} ± {std_err_auc:.3f} (SE)
 """
     # print(f"Mean CV accuracy: {mean_acc:.3f} ± {std_acc:.3f}")
     # print(f"Mean CV ROC-AUC: {mean_auc:.3f} ± {std_auc:.3f}")
@@ -494,27 +456,72 @@ Mean CV ROC-AUC: {mean_auc:.3f} ± {std_auc:.3f}
 
     return best_model, metrics, imp_series
 
-with open(cachedir / 'xgb_classifier_feature_selection.txt', 'w') as f:
-    for endpoint in eadb.EndpointName.unique():
-        vals, adj_endpoint, threshold = process_eadb_endpoint(endpoint)
-        
-        index_intersection = activity_df.index.intersection(vals.index)
-        X = activity_df.loc[index_intersection]
-        # y_binary = vals.loc[index_intersection] > threshold  # binary target based on threshold
-        y_binary = (vals.loc[index_intersection] > threshold).squeeze() # binary target based on threshold
+def write_xgb_classifier_feature_selection(cachedir: Path, activity_df: pd.DataFrame, dataset: pd.DataFrame):
+    """
+    Run XGB classifier feature selection for each EADB endpoint and write results to a file.
+    """
+    
+    # Ensure the cache directory exists
+    cachedir.mkdir(parents=True, exist_ok=True)
 
-        best_model, metrics, imp_series = get_xgb_classifier_feature_selection(
-            X,
-            y_binary,
-        )
+    # Write results to a text file
+    with open(cachedir / 'xgb_classifier_feature_selection.txt', 'w') as f:
+        for endpoint in dataset.EndpointName.unique():
+            vals, adj_endpoint, threshold = process_dataset_endpoint(dataset, endpoint)
+            
+            index_intersection = activity_df.index.intersection(vals.index)
+            X = activity_df.loc[index_intersection]
+            # y_binary = vals.loc[index_intersection] > threshold  # binary target based on threshold
+            y_binary = (vals.loc[index_intersection] > threshold).squeeze() # binary target based on threshold
 
-        f.write("#" + "="*80 + "\n")
-        f.write(f"Processed {endpoint} with {len(vals)} values, adjusted endpoint: {adj_endpoint}\n")
-        f.write(metrics)
-        f.write("Top 20 features (best outer fold):")
-        f.write(imp_series.to_string())
-        f.write("\n\n")
+            best_model, metrics, imp_series = get_xgb_classifier_feature_selection(
+                X,
+                y_binary,
+            )
+
+            f.write("#" + "="*80 + "\n")
+            f.write(f"Processed {endpoint} with {len(vals)} values, adjusted endpoint: {adj_endpoint}\n")
+            f.write(metrics)
+            f.write("Top 20 features (best outer fold):")
+            f.write(imp_series.to_string())
+            f.write("\n\n")
 
 # get_xgb_classifier_feature_selection()
 
     
+if __name__ == "__main__":
+    # Uncomment the function calls you want to run
+    # characterize_descriptors()
+    # get_PCA()
+    # get_histogram()
+    # get_linear()
+    # get_clusters()
+    # get_binary_model()
+    # get_decision_tree_model_feature_selection(transform_type='binary')
+    # get_random_forest_regressor_feature_selection(transform_type='binary')
+
+    parser = argparse.ArgumentParser(description="Run dataset characterization.")
+    parser.add_argument('--dataset', type=str, required=True,
+                        help="Name of the database.")
+    parser.add_argument('--transform', type=str, default='', choices=['', 'z_scale', 'binary'],
+                        help="Type of transformation to apply to the feature matrix.")
+    parser.add_argument('--k', type=int, default=154, help="Number of top features to keep for feature selection.")
+    parser.add_argument('--n_estimators', type=int, default=200,
+                        help="Number of trees in the Random Forest.")
+    parser.add_argument('--max_depth', type=int, default=None, help="Maximum depth of the trees.")
+    parser.add_argument('--n_iter', type=int, default=30, help="Number of iterations for hyperparameter search.")
+    parser.add_argument('--random_state', type=int, default=0, help="Random seed for reproducibility.")
+    parser.add_argument('--endpoint', type=str, default=None,
+                        help="Specific EADB endpoint to process (if provided).")
+    
+    args = parser.parse_args()
+
+    # Read the activity matrix from the cache
+    cachedir = Path('cache') / args.dataset
+    activity_df = pd.read_parquet(cachedir / 'activity_matrix_filled.parquet')
+
+    # Read the specified dataset
+    resourcedir = Path('resources')
+    dataset_parquet = resourcedir / f'{args.dataset}_full.parquet'
+    dataset = pd.read_parquet(dataset_parquet)
+
