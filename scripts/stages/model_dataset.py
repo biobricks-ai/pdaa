@@ -416,15 +416,19 @@ def get_xgb_classifier_feature_selection(
     outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=UserWarning)  # silence fit/predict_proba overlap msgs
-        cv_results = cross_validate(
-            search,
-            X_trans,
-            y_binary,
-            cv=outer_cv,
-            scoring=['accuracy', 'roc_auc'],
-            return_estimator=True,
-            n_jobs=-1,
-        )
+        try:
+            cv_results = cross_validate(
+                search,
+                X_trans,
+                y_binary,
+                cv=outer_cv,
+                scoring=['accuracy', 'roc_auc'],
+                return_estimator=True,
+                n_jobs=-1,
+            )
+        except ValueError as e:
+            print(f"Error during cross-validation: {e}")
+            return None, None, None
 
     mean_acc  = cv_results['test_accuracy'].mean()
     std_err_acc = cv_results['test_accuracy'].std(ddof=1) / np.sqrt(len(cv_results['test_accuracy']))
@@ -471,6 +475,10 @@ def write_xgb_classifier_feature_selection(cachedir: Path, activity_df: pd.DataF
                 X,
                 y_binary,
             )
+            # handle errors in feature selection
+            if metrics is None:
+                print(f"Error processing endpoint {endpoint}. Skipping...")
+                continue
 
             f.write("#" + "="*80 + "\n")
             f.write(f"Processed {endpoint} with {len(vals)} values, adjusted endpoint: {adj_endpoint}\n")
