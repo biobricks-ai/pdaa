@@ -483,6 +483,35 @@ def smiles_is_true_phthalate(smiles, *, check_elements=True, valid_num_rings=[1]
         return False
     return is_true_phthalate(mol, check_elements=check_elements, valid_num_rings=valid_num_rings)
 
+def is_diester_phthalate(mol, *, check_elements=True, valid_num_rings=[1]):
+    """
+    Check if a molecule is a diester phthalate.
+
+    Parameters
+    ----------
+    mol : rdkit.Chem.Mol
+        Molecule to check.
+    check_elements : bool
+        If True, check that all atoms are C, H, or O.
+    valid_num_rings : list[int] | None
+        If not None, check that the number of rings in the molecule is in this list.
+
+    Returns
+    -------
+    bool
+        True if the molecule is a diester phthalate.
+    """
+    found_substructure = False
+    for isomer in ("ortho_phthalate", "meta_phthalate", "para_phthalate"):
+        if is_phthalate(mol, modes=(isomer,), check_elements=check_elements, valid_num_rings=valid_num_rings):
+            if not found_substructure:
+                found_substructure = True
+            else:
+                # If we find more than one isomer, it's not a diester phthalate
+                return False
+    
+    return False  # no relevant substructure found
+
 def longest_carbon_backbone(mol: Chem.Mol) -> int:
     """
     Given an RDKit Mol that is already known to be a phthalate, return
