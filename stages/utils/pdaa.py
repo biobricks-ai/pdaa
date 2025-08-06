@@ -510,7 +510,7 @@ def is_diester_phthalate(mol, *, check_elements=True, valid_num_rings=[1]):
                 # If we find more than one isomer, it's not a diester phthalate
                 return False
     
-    return False  # no relevant substructure found
+    return found_substructure
 
 def longest_carbon_backbone(mol: Chem.Mol) -> int:
     """
