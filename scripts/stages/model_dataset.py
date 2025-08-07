@@ -345,6 +345,7 @@ def get_xgb_classifier_feature_selection(
     k: int | None = None,
     n_iter: int = 30,
     random_state: int = 0,
+    model_save_path: Path | None = None,
 ):
     """
     Extreme Gradient Boosting (binary classification) with MI feature selection
@@ -446,6 +447,11 @@ Mean CV ROC-AUC: {mean_auc:.3f} ± {std_err_auc:.3f} (SE)
     best_idx   = np.argmax(cv_results['test_roc_auc'])
     best_model = cv_results['estimator'][best_idx].best_estimator_
 
+    if model_save_path is not None:
+        # Save the best model to a file
+        best_model.named_steps['clf'].save_model(model_save_path)
+        print(f"Best model saved to {model_save_path}")
+
     # Optional: inspect its top feature importances
     importances = best_model.named_steps['clf'].feature_importances_
     kept_feats  = best_model.named_steps['filter_mi'].get_feature_names_out(X_trans.columns)
@@ -471,9 +477,15 @@ def write_xgb_classifier_feature_selection(cachedir: Path, activity_df: pd.DataF
             # y_binary = vals.loc[index_intersection] > threshold  # binary target based on threshold
             y_binary = (vals.loc[index_intersection] > threshold).squeeze() # binary target based on threshold
 
+            if endpoint == 'logRBA':
+                model_save_path = cachedir / 'xgb_classifier_logRBA_model.json'
+            else:
+                model_save_path = None
+
             _, metrics, imp_series = get_xgb_classifier_feature_selection(
                 X,
                 y_binary,
+                model_save_path=model_save_path,
             )
             # handle errors in feature selection
             if metrics is None:

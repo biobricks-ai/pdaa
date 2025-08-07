@@ -19,7 +19,8 @@ from scripts.utils.helpers import (
     get_linear_model,
     get_descriptors,
     compute_vifs,
-    plot_activity_features
+    plot_activity_features,
+    remove_high_vif_descriptors,
 )
 
 # savepath for figures
@@ -574,13 +575,14 @@ if __name__ == "__main__":
 
     # manually dropping descriptors with high VIFs
     descriptor_df_cp = descriptor_df.copy()
-    descriptor_df = descriptor_df.drop(columns=[
-        'MolWt',
-        'MolMR',
-        'Kappa2',
-        'Kappa3',
-        'cLogP',
-    ])
+    # descriptor_df = descriptor_df.drop(columns=[
+    #     'MolWt',
+    #     'MolMR',
+    #     'Kappa2',
+    #     'Kappa3',
+    #     'cLogP',
+    # ])
+    descriptor_df = remove_high_vif_descriptors(descriptor_df, vif_threshold=10)
 
     if args.lcb_plots:
         # plot the trend with longest carbon backbone
@@ -594,14 +596,17 @@ if __name__ == "__main__":
     X = z_scale_df(descriptor_df)
     Y = z_scale_df(activity_df)
 
-    # Compute variance inflation factors (VIFs) to check for multicollinearity
-    vif_table = compute_vifs(X)
-    print("VIF Table:")
-    print(vif_table)
+    # # Compute variance inflation factors (VIFs) to check for multicollinearity
+    # vif_table = compute_vifs(X)
+    # print("VIF Table:")
+    # print(vif_table)
     
-    for descriptor in vif_table['descriptor']:
-        if vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0] > 10:
-            print(f"Warning: High VIF detected for descriptor '{descriptor}' (VIF={vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0]}). Consider removing it.")
+    # for descriptor in vif_table['descriptor']:
+    #     if vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0] > 10:
+    #         print(f"Warning: High VIF detected for descriptor '{descriptor}' (VIF={vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0]}). Consider removing it.")
+
+    # # Remove descriptors with high VIFs
+    # X = remove_high_vif_descriptors(X, vif_threshold=10)
 
     # Fit a linear regression model to the data
     # ols, marginal_r2 = get_linear_model(X, Y)

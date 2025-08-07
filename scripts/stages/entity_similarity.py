@@ -4,6 +4,7 @@ import pathlib
 import pandas as pd
 import sqlite3
 from tqdm import tqdm
+import warnings
 
 import rdkit, rdkit.Chem.rdMolDescriptors, rdkit.Chem.Crippen, rdkit.Chem.rdFingerprintGenerator, rdkit.DataStructs
 from rdkit import Chem
@@ -20,8 +21,15 @@ import stages.utils.sparql as sparql
 
 resourcedir = pathlib.Path('resources')
 
-def _styled_heatmap(matrix, row_colors, *, dpi=600,
-                    fontcolor='white', linecolor='black'):
+# diverging colormap for heatmap
+diverging_colormap = 'vlag'  # okay, too washed out
+# diverging_colormap = 'coolwarm'  # looks terrible
+# diverging_colormap = 'berlin'  # 
+
+def _styled_heatmap(
+        matrix, row_colors, *, dpi=600,
+        fontcolor='white', linecolor='black', z_scale=False,
+):
     """
     Wrapper around seaborn.clustermap with the same visual
     tweaks used in build_heatmap.py (_generate_heatmap).
@@ -29,20 +37,33 @@ def _styled_heatmap(matrix, row_colors, *, dpi=600,
     - row_colors: list-like, same length as matrix.shape[0]
     """
     # Cluster only columns; we already ordered rows
-    g = sns.clustermap(matrix,
-                    #    square=True,       # ← force equal-sized cells
-                       cbar_kws={'drawedges': False},  # disable seaborn’s built-in bar
-                       cmap='viridis',
-                       row_cluster=False, col_cluster=True,
-                       row_colors=row_colors,
-                       xticklabels=False, yticklabels=False,
-                       linecolor=linecolor,
-                    #    linewidths=0.5,
-                       figsize=(18, 9),
-                    #    cbar_pos=(0.91, 0.3, 0.02, 0.4),
-                       cbar_pos=(0.95, 0.3, 0.02, 0.4),
-                       dendrogram_ratio=(0.10, 0.05),
-                       tree_kws={'linewidths': 0.5})
+    if z_scale:
+        vscale = 3
+        vmin = -vscale
+        vmax = +vscale
+    else:
+        vmin=0
+        vmax=1
+
+    g = sns.clustermap(
+        matrix,
+        # square=True,       # ← force equal-sized cells
+        cbar_kws={'drawedges': False},  # disable seaborn’s built-in bar
+        cmap=diverging_colormap if z_scale else 'viridis',
+        row_cluster=False,
+        col_cluster=False,
+        row_colors=row_colors,
+        xticklabels=False, yticklabels=False,
+        linecolor=linecolor,
+        # linewidths=0.5,
+        figsize=(18, 9),
+        # cbar_pos=(0.91, 0.3, 0.02, 0.4),
+        cbar_pos=(0.95, 0.3, 0.02, 0.4),
+        dendrogram_ratio=(0.10, 0.05),
+        tree_kws={'linewidths': 0.5},
+        vmin=vmin, vmax=vmax,
+        # clip=True,
+    )
     # Remove any stray colorbar
     if hasattr(g, 'cax') and g.cax:
         g.cax.remove()
@@ -53,17 +74,28 @@ def _styled_heatmap(matrix, row_colors, *, dpi=600,
     cax = divider.append_axes("right", size="2%", pad=0.6)
     # expose the divider so callers can add more axes without destroying the layout
     g.divider = divider
-    sm  = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=matrix.min().min(),
-                                                                vmax=matrix.max().max()))
+    
+
+    sm  = plt.cm.ScalarMappable(
+        cmap=diverging_colormap if z_scale else 'viridis',
+        norm=plt.Normalize(
+            # vmin=matrix.min().min(),
+            # vmax=matrix.max().max())
+            vmin=vmin, vmax=vmax,
+            clip=True,
+        )
+    )
     sm.set_array([])
     cb = g.figure.colorbar(sm, cax=cax)
     cb.set_label('Activity Score', fontsize=18, labelpad=10)
     cb.ax.tick_params(labelsize=14)
 
     # Hide col dendrogram but keep clustering
-    g.ax_col_dendrogram.set_visible(False)
+    show_dendrogram = True
+    g.ax_col_dendrogram.set_visible(show_dendrogram)
 
-    g.ax_heatmap.set_xlabel('DART or ED Assays', color=fontcolor, fontsize=20)
+    # g.ax_heatmap.set_xlabel('DART or ED Assays', color=fontcolor, fontsize=20)
+    g.ax_heatmap.set_xlabel('Principal Components', color=fontcolor, fontsize=20)
 
     # Label the colorbar
     cbar = g.ax_heatmap.collections[0].colorbar
@@ -229,7 +261,7 @@ phthalate_df = build_phthalate_ice_activity_df()[['uri','title','inchi','mol','p
 # endregion
 
 # region HEATMAP & DENSITY OF PHTHALATE ACTIVITY ===============================
-def cluster_rows_and_make_heatmap():
+def cluster_rows_and_make_heatmap(z_scale=False, group_clusters=True, color_by = 'isomer', PCA_components=50, weighted_mean=False):
     activity_matrix = phthalate_df.groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     activity_matrix = activity_matrix.pivot(index='inchi', columns='title', values='positive_prediction')
 
@@ -248,22 +280,59 @@ def cluster_rows_and_make_heatmap():
     # save the filled activitiy matrix
     activity_matrix_filled.to_parquet(cachedir / 'activity_matrix_filled.parquet')
 
+    if PCA_components is not None:
+        from sklearn.decomposition import PCA
+        # use the PCA matrix instead of the original activity matrix
+        pca = PCA(n_components=50)
+        activity_matrix_filled = pd.DataFrame(
+            pca.fit_transform(activity_matrix_filled),
+            index=activity_matrix_filled.index,
+            columns=[f'PC{i+1}' for i in range(50)]
+        )
+
+    if z_scale:
+        # Z-score normalization
+        activity_matrix_filled = (activity_matrix_filled - activity_matrix_filled.mean(axis=0)) / activity_matrix_filled.std(axis=0)
+
     # Apply KMeans clustering
-    n_clusters = 3
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    row_clusters = kmeans.fit_predict(activity_matrix_filled)
+    # n_clusters = 3
+    if color_by is None:
+        # No color coding
+        n_clusters = 1
+        row_clusters = np.zeros(len(activity_matrix_filled), dtype=int)
+        row_colors = None
+    elif color_by == 'isomer':
+        # ignore clustering for now
+        n_clusters = len(isomers_list)
+        row_clusters = np.zeros(len(activity_matrix_filled), dtype=int)
+    elif color_by == 'cluster':
+        n_clusters = 2
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        row_clusters = kmeans.fit_predict(activity_matrix_filled)
 
     # Still use hierarchical clustering for column ordering
     col_linkage = hierarchy.linkage(activity_matrix_filled.T, method='average')
     col_order = hierarchy.leaves_list(col_linkage)
+    # row_linkage = hierarchy.linkage(activity_matrix_filled, method='average')
+    # cluster_order = hierarchy.leaves_list(row_linkage)
 
-    # Sort rows by cluster and then by mean activity within clusters
-    mean_activities = activity_matrix_filled.mean(axis=1)
-    cluster_order = []
-    for i in range(n_clusters):
-        cluster_indices = np.where(row_clusters == i)[0]
-        sorted_indices = cluster_indices[np.argsort(mean_activities.iloc[cluster_indices])]
-        cluster_order.extend(sorted_indices)
+    if (PCA_components is not None) and weighted_mean:
+        # weighted mean based on the percent variance explained by each PCA component
+        mean_activities = (activity_matrix_filled * pca.explained_variance_ratio_).sum(axis=1)/ pca.explained_variance_ratio_.sum()
+    else:
+        # simple mean
+        mean_activities = activity_matrix_filled.mean(axis=1)
+
+    if group_clusters:
+        # Sort by cluster first, then by mean activity
+        cluster_order = []
+        for i in range(n_clusters):
+            cluster_indices = np.where(row_clusters == i)[0]
+            sorted_indices = cluster_indices[np.argsort(mean_activities.iloc[cluster_indices])]
+            cluster_order.extend(sorted_indices)
+    else:
+        # Sort by mean activity only
+        cluster_order = np.argsort(mean_activities)
 
     # Reorder the matrix
     reordered_matrix = activity_matrix_filled.iloc[cluster_order, col_order]
@@ -273,8 +342,9 @@ def cluster_rows_and_make_heatmap():
         for pos, inchi in enumerate(reordered_matrix.index)
     }
 
-    # Calculate mean activity per chemical across all assays
-    mean_activity = reordered_matrix.mean(axis=1)
+    mean_activity = mean_activities.iloc[cluster_order]
+    # # Calculate mean activity per chemical across all assays
+    # mean_activity = reordered_matrix.mean(axis=1)
 
     # Define specific colors for each cluster
     # isomer_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Blue, Red, Green
@@ -301,18 +371,16 @@ def cluster_rows_and_make_heatmap():
     # row_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
     # Instead, color based on ortho, iso, or tere phthalate
     
-    # color_by = 'isomer'
-    color_by = 'cluster'
-
     if color_by == 'isomer':
         isomer_matches = np.array([0 for _ in isomers_list])
         row_colors = []
         # n_non_ortho = 0
-        for inchi in reordered_matrix.index:
+        for i, inchi in enumerate(reordered_matrix.index):
             if (mol := Chem.MolFromInchi(inchi)) is None:
                 continue  # skip invalid InChIs
             match_list = [pdaa.is_phthalate(mol, modes=(isomer,)) for isomer in isomers_list]
             isomer_matches += match_list
+            row_clusters[i] = np.argmax(match_list)  # assign the cluster based on the first match
             row_colors.append(
                 isomer_colors[tuple(match_list)]
             )
@@ -335,7 +403,24 @@ def cluster_rows_and_make_heatmap():
     elif color_by == 'cluster':
         # Use the cluster colors instead
         row_colors = [base_colors[row_clusters[i]] for i in cluster_order]
-    g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black')
+
+    # g = sns.clustermap(
+    #     reordered_matrix,
+    #     # square=True,       # ← force equal-sized cells
+    #     cbar_kws={'drawedges': False},  # disable seaborn’s built-in bar
+    #     cmap=diverging_colormap if z_scale else 'viridis',
+    #     row_cluster=True, col_cluster=False,
+    #     row_colors=row_colors,
+    #     xticklabels=False, yticklabels=False,
+    #     figsize=(18, 9),
+    #     cbar_pos=(0.95, 0.3, 0.02, 0.4),
+    #     dendrogram_ratio=(0.10, 0.05),
+    #     tree_kws={'linewidths': 0.5},
+    #     vmin=-3, vmax=+3,
+    # )
+    # plt.show()
+    # return
+    g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black', z_scale=z_scale)
 
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
@@ -346,21 +431,69 @@ def cluster_rows_and_make_heatmap():
     ax_bar  = divider.append_axes("right", size="15%", pad=1.0)  # pad > 0.6 keeps some space
 
     # ─── Plot mean activity ──────────────────────────────────────────────
-    if color_by == 'isomer':
-        cluster_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Darker Blue, Darker Red, Darker Green
+    if color_by is None:
+        # No color coding, use a single color
+        cluster_colors = ["#ACACAD"]
+    elif color_by == 'isomer':
+        # cluster_colors = ['#1f77b4', '#d62728', '#2ca02c']  # Darker Blue, Darker Red, Darker Green
+        cluster_colors = base_colors  # Darker Blue, Darker Red, Darker Green
     elif color_by == 'cluster':
         # Use the same colors as the clusters
         cluster_colors = base_colors
     bar_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
     ax_bar.barh(range(len(mean_activity)), mean_activity, color=bar_colors)
 
-    # ─── Annotate the example phthalates ────────────────────────────────
-    for inchi, name in example_inchi2name.items():
-        pos = reordered_indices.get(inchi)
-        if pos is not None:
-            ax_bar.text(mean_activity.iloc[pos], pos,
-                        f' {name}',
-                        va='center', fontsize=10, color='black')
+    # ─── Collect & sort examples ──────────────────────────────────────────
+    examples = sorted(
+        [(reordered_indices[i], i, n)                       # (row-idx, InChI, name)
+         for i, n in example_inchi2name.items()
+         if i in reordered_indices],
+        key=lambda t: t[0]
+    )
+    base_rows = np.array([p for p, _, _ in examples], dtype=float)
+
+    # ─── Resolve collisions iteratively ──────────────────────────────────
+    min_sep = 33.0                      # desired gap in row units
+    shifts  = np.zeros_like(base_rows) # incremental y-offsets
+    max_iter = 300
+    for _ in range(max_iter):
+        moved = False
+        # walk down sorted list and push pairs that overlap
+        for j in range(1, len(base_rows)):
+            y_prev = base_rows[j-1] + shifts[j-1]
+            y_curr = base_rows[j]   + shifts[j]
+            gap = y_curr - y_prev
+            if gap < min_sep:
+                delta = 0.5*(min_sep - gap)
+                shifts[j-1] -= delta   # push up
+                shifts[j]   += delta   # push down
+                moved = True
+        if not moved:
+            break   # no overlaps; done
+    else:
+        warnings.warn("label-spreading hit max_iter without fully resolving overlaps")
+
+    # 3) render annotations
+
+    # fraction of the longest bar use for horizontal text offset
+    if z_scale:
+        bar_tip_fraction = 0.25
+    else:
+        bar_tip_fraction = 0.10  
+
+    x_offset = mean_activity.max()*bar_tip_fraction
+    for (pos, inchi, name), y_shift in zip(examples, shifts):
+        x = mean_activity.iloc[pos]
+        ax_bar.annotate(
+            name,
+            xy=(x, pos),                       # arrow starts at bar tip
+            xytext=(x + x_offset, pos + y_shift),
+            ha='left', va='center',
+            fontsize=11, color='black',
+            arrowprops=dict(arrowstyle='-', lw=0.6),
+            clip_on=False
+        )
+
 
     # ─── Tidy up axis ────────────────────────────────────────────────────
     ax_bar.set_ylim(g.ax_heatmap.get_ylim())
@@ -369,21 +502,41 @@ def cluster_rows_and_make_heatmap():
 
     # ─── Cluster legend ─────────────────────────────────────────────────
     # Use three related but darker colors for cluster identification (to distinguish from isomer_colors)
-    
-    legend_elements = [
-        plt.Rectangle((0,0),1,1, facecolor=cluster_colors[i],
-                      label=f'Cluster {i+1}\n(n={np.sum(row_clusters==i)})')
-        for i in range(n_clusters)
-    ]
-    ax_bar.legend(
-        handles=legend_elements,
-        loc='upper left',
-        # loc='center left',
-        bbox_to_anchor=(1.05, 1.0),
-        borderaxespad=0.0,
-        title='Clusters',
-        fontsize=12
-    )
+    isomer_labels = ['Ortho', 'Iso', 'Tere']
+    if color_by == 'isomer':
+        legend_elements = [
+            plt.Rectangle(
+                (0,0),1,1,
+                facecolor=cluster_colors[i],
+                label=f'{isomer_labels[i]}\n(n={isomer_matches[i]})')
+            for i in range(n_clusters)
+        ]
+        ax_bar.legend(
+            handles=legend_elements,
+            loc='upper left',
+            # loc='center left',
+            bbox_to_anchor=(1.05, 1.0),
+            borderaxespad=0.0,
+            title='Isomers',
+            fontsize=12
+        )
+    elif color_by == 'cluster':
+        legend_elements = [
+            plt.Rectangle(
+                (0,0),1,1,
+                facecolor=cluster_colors[i],
+                label=f'Cluster {i+1}\n(n={np.sum(row_clusters==i)})')
+            for i in range(n_clusters)
+        ]
+        ax_bar.legend(
+            handles=legend_elements,
+            loc='upper left',
+            # loc='center left',
+            bbox_to_anchor=(1.05, 1.0),
+            borderaxespad=0.0,
+            title='Clusters',
+            fontsize=12
+        )
 
     # ─── Move the y-axis label (“Diester Phthalates”) to the left side ───────────
     g.ax_heatmap.yaxis.set_label_position('left')
@@ -392,7 +545,8 @@ def cluster_rows_and_make_heatmap():
         # 'Ortho-Phthalates',
         # 'Terephthalates',
         # 'Isophthalates',
-        color='black', fontsize=20, labelpad=35
+        color='black', fontsize=20,
+        labelpad=35*(color_by is not None)
     )
     g.ax_heatmap.yaxis.tick_left()
     # bump the left margin so the label isn’t cut off
@@ -433,7 +587,17 @@ def cluster_rows_and_make_heatmap():
     clustered_phthalate_df['example'] = clustered_phthalate_df['inchi'].progress_apply(lambda x: example_inchi2name.get(x, 'None'))
     return clustered_phthalate_df
 
-clustered_phthalate_df = cluster_rows_and_make_heatmap()[['uri','title','inchi','mol','positive_prediction','cluster','cluster_color','example']]
+clustered_phthalate_df = cluster_rows_and_make_heatmap(
+    z_scale=True,
+    group_clusters=False,
+    color_by=None,  # 'isomer', 'cluster', or None
+    PCA_components=50,  # None to skip PCA
+    weighted_mean=False  # use weighted mean based on PCA components
+)[
+    ['uri','title','inchi','mol','positive_prediction','cluster','cluster_color','example']
+]
+
+sys.exit(0)  # stop here while iterating
 
 # save dataframes
 phthalate_df.to_csv(cachedir / 'phthalate_df.csv', index=False)
@@ -564,7 +728,6 @@ def plot_phthalate_activity_relationships():
     print(caption)
 
 plot_phthalate_activity_relationships()
-# sys.exit()
 # endregion
 
 
@@ -582,7 +745,10 @@ def mkimage():
     # Get samples per cluster
     samples_list = []
     # for cluster in [2,0,1]:
-    for cluster in [0,2,1]:  # Order clusters by mean activity
+    # order clusters by mean activity programmatically
+    cluster_means = df4.groupby('cluster')['positive_prediction'].mean().sort_values()
+    cluster_order = cluster_means.index.tolist()
+    for cluster in cluster_order:
         cluster_df = df4[df4['cluster'] == cluster]
         
         # Get 5 compounds nearest to median activity
