@@ -29,4 +29,37 @@ plt.xlabel('Phthalates')
 plt.ylabel('Distance')
 plt.tight_layout()
 plt.savefig(datadir / "phthalate_dendrogram.png")
-plt.show()
+
+
+# --- Sweep over multiple linkage methods and distance metrics
+linkage_methods = ['ward', 'average', 'complete']
+distance_metrics = ['euclidean', 'cityblock', 'cosine']
+
+for method in linkage_methods:
+    for metric in distance_metrics:
+        # Ward linkage is only defined for Euclidean distances
+        if method == 'ward' and metric != 'euclidean':
+            continue
+
+        # Perform hierarchical clustering with the chosen parameters
+        Z = linkage(
+            activity_matrix_filled.T,
+            method=method,
+            metric=metric
+        )
+
+        # Plot and save the dendrogram
+        plt.figure(figsize=(10, 7))
+        dendrogram(
+            Z,
+            labels=None,
+            leaf_rotation=90,
+            leaf_font_size=10
+        )
+        plt.title(f'Hierarchical Clustering (method={method}, metric={metric})')
+        plt.xlabel('Assays')
+        plt.ylabel('Distance')
+        plt.tight_layout()
+        out_file = datadir / f'phthalate_dendrogram_{method}_{metric}.png'
+        plt.savefig(out_file)
+        plt.close()
