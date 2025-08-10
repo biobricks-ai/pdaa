@@ -38,6 +38,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from sklearn.decomposition import DictionaryLearning
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
 
 # ---------------------------------------------------------------------------
 # Configurable parameters
@@ -52,11 +53,10 @@ RANDOM_STATE = 42
 # Load data
 # ---------------------------------------------------------------------------
 
-CACHEDIR = Path("cache")
-DATADIR = CACHEDIR / "entity_similarity2"
-DATADIR.mkdir(parents=True, exist_ok=True)
+cachedir = Path("cache")
+datadir = cachedir / "entity_similarity2"
 
-activity_matrix_fp = DATADIR / "activity_matrix_filled.parquet"
+activity_matrix_fp = datadir / "activity_matrix_filled.parquet"
 if not activity_matrix_fp.exists():
     raise FileNotFoundError(
         f"Expected {activity_matrix_fp} to exist. Verify your data path.")
@@ -103,7 +103,7 @@ code_df = pd.DataFrame(
     index=activity_matrix.index,  # chemical identifiers
     columns=[f"Comp_{i:02d}" for i in range(N_COMPONENTS)],
 )
-code_df.to_parquet(DATADIR / "chemical_codes.parquet")
+code_df.to_parquet(datadir / "chemical_codes.parquet")
 print("Saved sparse codes to chemical_codes.parquet")
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ for i, comp in enumerate(components):
         )
 
 top_loadings_df = pd.DataFrame(rows)
-loadings_fp = DATADIR / "component_loadings.csv"
+loadings_fp = datadir / "component_loadings.csv"
 top_loadings_df.to_csv(loadings_fp, index=False)
 print(f"Saved top loadings per component to {loadings_fp}")
 
@@ -145,11 +145,11 @@ for i, comp in enumerate(components):
     plt.xticks(np.arange(len(assay_names)), assay_names, rotation=90, fontsize=6)
     plt.title(f"Dictionary Component {i:02d} Loadings")
     plt.tight_layout()
-    heatmap_fp = DATADIR / f"component_heatmap_{i:02d}.png"
+    heatmap_fp = datadir / f"component_heatmap_{i:02d}.png"
     plt.savefig(heatmap_fp, dpi=200)
     plt.close()
 
-print("All heatmaps saved in", DATADIR)
+print("All heatmaps saved in", datadir)
 
 # ---------------------------------------------------------------------------
 # Quick interpretability report (console)
@@ -168,3 +168,38 @@ for i in range(N_COMPONENTS):
     print_component_summary(i)
 
 print("\nFinished Sparse Dictionary Learning workflow.")
+
+
+def fit_dict(X, n_components, alpha):
+    dl = DictionaryLearning(n_components=n_components, alpha=alpha,
+                            random_state=0, n_jobs=-1, max_iter=500)
+    codes = dl.fit_transform(X)  # Sparse code matrix
+    recon = np.dot(codes, dl.components_)  # Reconstruct the data
+    mse = mean_squared_error(X, recon)
+    sparsity = 1.0 - (np.count_nonzero(codes) / codes.size)
+    return mse, sparsity, recon
+
+def grid_search(X):
+    """
+    Perform a grid search over different n_components and alpha values.
+    Returns a list of results for each combination.
+    """
+    print("Starting grid search...")
+
+    grid = [(n, a) for n in (20, 40, 60) for a in (0.5, 1.0, 2.0)]
+    grid_results = []
+    print("\nFitting Dictionary Learning with different parameters:")
+    print("n_components | alpha | MSE     | Sparsity")
+    for n, a in grid:
+        mse, sparsity, recon = fit_dict(X, n, a)
+        results = f"n={n:2d} α={a:3.1f}  MSE={mse:.4f}  sparsity={sparsity:.2%}"
+        print(results)
+        grid_results.append(results)
+
+    # Save grid results to a file
+    grid_results_fp = datadir / "dictionary_learning_grid_results.txt"
+    with open(grid_results_fp, "w") as f:
+        f.write("\n".join(grid_results))
+    print(f"\nGrid results saved to {grid_results_fp}")
+
+grid_search(X)
