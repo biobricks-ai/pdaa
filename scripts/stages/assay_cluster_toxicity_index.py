@@ -355,6 +355,29 @@ def pc1_per_cluster(
 
     return loadings_df, scores_df, var_explained
 
+def compute_cluster_mean_scores(
+    Xz: pd.DataFrame,
+    assays: List[str],
+    cluster_members: Dict[int, List[int]]
+) -> pd.DataFrame:
+    """
+    Compute per-chemical mean standardized activity within each cluster.
+
+    Returns
+    -------
+    scores_df : DataFrame [n_chemicals x C] with signed mean scores per cluster
+    """
+    chemicals = Xz.index
+    C = len(cluster_members)
+    scores = np.zeros((len(chemicals), C), dtype=float)
+    for cid in range(1, C + 1):
+        cols_idx = cluster_members[cid]
+        cols = [assays[i] for i in cols_idx]
+        Xc = Xz[cols].values
+        scores[:, cid - 1] = Xc.mean(axis=1)
+    score_cols = [f"Cluster_{cid:03d}" for cid in range(1, C + 1)]
+    return pd.DataFrame(scores, index=chemicals, columns=score_cols)
+
 # ----------------------------- PCA diagnostics ----------------------------- #
 
 def pca_broken_stick_diagnostic(Xz: pd.DataFrame) -> None:
@@ -389,6 +412,29 @@ def pca_broken_stick_diagnostic(Xz: pd.DataFrame) -> None:
                  k_keep, p, pairs)
 
 # ----------------------------- Toxicity Index ----------------------------- #
+
+def compute_ti_from_scores(scores_df: pd.DataFrame, weights: Dict[int, float]) -> pd.DataFrame:
+    """
+    Compute TI_equal and TI_weighted from arbitrary per-chemical cluster scores.
+
+    Parameters
+    ----------
+    scores_df : DataFrame [n_chemicals x C], signed cluster scores per chemical
+    weights   : dict cluster_id -> nonnegative weight (e.g., cluster size)
+    """
+    abs_scores = scores_df.abs().values
+    C = abs_scores.shape[1]
+    ti_equal = abs_scores.mean(axis=1)
+
+    w = np.array([weights[cid] for cid in range(1, C + 1)], dtype=float)
+    w_sum = w.sum()
+    if not np.isfinite(w_sum) or w_sum <= 0:
+        w = np.ones_like(w) / C
+    else:
+        w /= w_sum
+    ti_weighted = abs_scores.dot(w)
+
+    return pd.DataFrame({"TI_equal": ti_equal, "TI_weighted": ti_weighted}, index=scores_df.index)
 
 def compute_ti(scores_df: pd.DataFrame, var_explained: Dict[int, float]) -> pd.DataFrame:
     """
@@ -470,7 +516,8 @@ def save_outputs(
     cluster_members: Dict[int, List[int]],
     loadings_df: pd.DataFrame,
     scores_df: pd.DataFrame,
-    ti_df: pd.DataFrame
+    ti_df: pd.DataFrame,
+    mean_scores_df: Optional[pd.DataFrame] = None
 ) -> None:
     """
     Save cluster assignments, loadings, scores, and TI tables to disk.
@@ -499,10 +546,14 @@ def save_outputs(
                              "is_singleton": n_assays == 1})
     pd.DataFrame(summary_rows).sort_values("cluster_id").to_csv(outdir / "cluster_summary.csv", index=False)
 
-    # chemical_cluster_scores.parquet
+    # chemical_cluster_scores.parquet (PC1-based)
     scores_df.to_parquet(outdir / "chemical_cluster_scores.parquet", index=True)
 
-    # toxicity_index.parquet
+    # Optional: mean-based cluster scores
+    if mean_scores_df is not None:
+        mean_scores_df.to_parquet(outdir / "chemical_cluster_scores_mean.parquet", index=True)
+
+    # toxicity_index.parquet (based on selected TI mode)
     ti_df.to_parquet(outdir / "toxicity_index.parquet", index=True)
 
 
@@ -596,6 +647,9 @@ def main():
     parser.add_argument("--examples-csv", type=str, default=None,
                         help="Optional CSV with example phthalates to annotate on the TI histogram; "
                              "expects columns ['name', 'inchi'] or ['name', 'smiles'].")
+    parser.add_argument("--use-pc1", action="store_true",
+                    help="Use principal component 1 (PC1)-based cluster scores for TI. "
+                            "Default is mean standardized activity within each cluster.")
     args = parser.parse_args()
 
     # Logging config
@@ -650,8 +704,19 @@ def main():
         Xz=Xz, assays=assays, cluster_members=cluster_members, random_state=args.random_state
     )
 
-    # TI computation
-    ti_df = compute_ti(scores_df, var_explained)
+    # Per-cluster mean scores (default TI mode)
+    mean_scores_df = compute_cluster_mean_scores(
+        Xz=Xz, assays=assays, cluster_members=cluster_members
+    )
+
+    # TI computation: default uses mean scores; --use-pc1 switches to PC1 scores
+    if args.use_pc1:
+        ti_df = compute_ti(scores_df, var_explained)
+        logging.info("TI mode: PC1-based cluster scores.")
+    else:
+        size_weights = {cid: len(cluster_members[cid]) for cid in cluster_members}
+        ti_df = compute_ti_from_scores(mean_scores_df, size_weights)
+        logging.info("TI mode: mean activity within each cluster (weights ∝ cluster size).")
 
     # Load example phthalates and prepare labels (InChI -> short name)
     example_labels: Dict[str, str] = {}
@@ -679,8 +744,9 @@ def main():
         labels=labels,
         cluster_members=cluster_members,
         loadings_df=loadings_df,
-        scores_df=scores_df,
-        ti_df=ti_df
+        scores_df=scores_df,            # PC1-based cluster scores
+        ti_df=ti_df,                    # TI from selected mode
+        mean_scores_df=mean_scores_df   # mean-based cluster scores
     )
 
     # Plots
