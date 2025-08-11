@@ -47,6 +47,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from rdkit import Chem
 
 # ----------------------------- I/O and preprocessing ----------------------------- #
 
@@ -191,7 +192,8 @@ def cluster_assays(
     n_clusters: Optional[int],
     corr_threshold: Optional[float],
     silhouette_range: Tuple[int, int],
-    random_state: int
+    random_state: int,
+    linkage_method: str = "average",
 ) -> Tuple[np.ndarray, np.ndarray, List[str], int, Optional[float], Optional[float], Dict[int, List[int]]]:
     """
     Perform hierarchical clustering on assays and select cluster labels.
@@ -209,7 +211,7 @@ def cluster_assays(
     D, D_condensed, assays = assay_distance_matrix(Xz)
 
     # Average linkage; optimal_ordering improves dendrogram readability
-    Z = linkage(D_condensed, method="average", optimal_ordering=True)
+    Z = linkage(D_condensed, method=linkage_method, optimal_ordering=True)
 
     if n_clusters is not None and corr_threshold is not None:
         logging.warning("--n-clusters provided; ignoring --corr-threshold.")
@@ -241,7 +243,7 @@ def cluster_assays(
                 continue
             if score > best_score + 1e-9 or (abs(score - best_score) <= 1e-9 and (best_k is None or k < best_k)):
                 best_k, best_score = k, score
-            print(f"Silhouette for k={k}: {score:.3f}")
+            # print(f"Silhouette for k={k}: {score:.3f}")
         if best_k is None:
             # Fallback: choose k=lo even if silhouette undefined
             logging.warning("Silhouette undefined for all k; falling back to k=%d.", lo)
@@ -353,6 +355,38 @@ def pc1_per_cluster(
 
     return loadings_df, scores_df, var_explained
 
+# ----------------------------- PCA diagnostics ----------------------------- #
+
+def pca_broken_stick_diagnostic(Xz: pd.DataFrame) -> None:
+    """
+    Log a broken-stick diagnostic on the assay correlation spectrum.
+
+    For p assays, eigenvalue proportions (PCA on assay correlation matrix) are
+    compared to the broken-stick expectation. We log how many components exceed
+    the null and show the top few proportions vs the null.
+    """
+    p = Xz.shape[1]
+    if p < 2:
+        logging.info("Broken-stick diagnostic skipped (p<2).")
+        return
+
+    R = np.corrcoef(Xz.values, rowvar=False)
+    # Eigenvalues of a correlation matrix sum to p
+    evals = np.linalg.eigvalsh(R)  # ascending
+    props = evals[::-1] / float(p)  # descending proportions
+
+    # Broken-stick expected proportions b_k
+    # b_k = (1/p) * sum_{i=k}^p (1/i)
+    inv = 1.0 / np.arange(1, p + 1, dtype=float)
+    csum = np.cumsum(inv[::-1])[::-1]  # sums from k..p
+    broken = csum / float(p)
+
+    k_keep = int(np.sum(props > broken))
+    top = min(5, p)
+    pairs = " ; ".join([f"{i+1}:{props[i]:.3f}>{broken[i]:.3f}" if props[i] > broken[i]
+                        else f"{i+1}:{props[i]:.3f}≤{broken[i]:.3f}" for i in range(top)])
+    logging.info("Broken-stick diagnostic: components above null = %d (of %d); top comps (prop vs null): %s",
+                 k_keep, p, pairs)
 
 # ----------------------------- Toxicity Index ----------------------------- #
 
@@ -385,6 +419,47 @@ def compute_ti(scores_df: pd.DataFrame, var_explained: Dict[int, float]) -> pd.D
     }, index=scores_df.index)
     return ti_df
 
+
+# ----------------------------- Example phthalates I/O ----------------------------- #
+
+def load_example_phthalates(path: Optional[Path]) -> Dict[str, str]:
+    """
+    Load example phthalates and produce a mapping from InChI -> short name.
+
+    Expected CSV columns:
+      - Required: 'name'
+      - One of:   'inchi' OR 'smiles'
+    If only 'smiles' is provided, RDKit is used to convert to InChI.
+
+    Names are shortened by removing a leading 'Dimethyl ' to match other scripts.
+    """
+    if path is None:
+        return {}
+    path = Path(path)
+    if not path.exists():
+        logging.warning("Examples CSV not found at %s; skipping annotation.", path)
+        return {}
+
+    df = pd.read_csv(path)
+    if "name" not in df.columns:
+        raise ValueError("Examples CSV must include a 'name' column.")
+    names = df["name"].astype(str).str.replace("Dimethyl ", "", regex=False)
+
+    if "inchi" in df.columns:
+        inchis = df["inchi"].astype(str)
+    elif "smiles" in df.columns:
+        if Chem is None:
+            raise ImportError("RDKit is required to convert SMILES to InChI but RDKit is not available.")
+        mols = df["smiles"].astype(str).apply(Chem.MolFromSmiles)
+        if mols.isna().any():
+            n_bad = int(mols.isna().sum())
+            raise ValueError(f"{n_bad} SMILES failed RDKit parsing.")
+        inchis = mols.apply(Chem.MolToInchi)
+    else:
+        raise ValueError("Examples CSV must include either 'inchi' or 'smiles'.")
+
+    mapping = {i: n for i, n in zip(inchis, names)}
+    return mapping
 
 # ----------------------------- Saving outputs ----------------------------- #
 
@@ -438,7 +513,8 @@ def make_plots(
     Z: np.ndarray,
     t_line: Optional[float],
     ti_df: pd.DataFrame,
-    var_explained: Dict[int, float]
+    var_explained: Dict[int, float],
+    example_labels: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     Create dendrogram with cut annotation, TI histogram, and variance explained bars.
@@ -462,6 +538,23 @@ def make_plots(
     plt.xlabel("TI_equal")
     plt.ylabel("Count")
     plt.title("Distribution of TI_equal")
+
+    # Optional annotations for example compounds
+    if example_labels:
+        ax = plt.gca()
+        ymax = ax.get_ylim()[1]
+        # Keep only examples that are in the TI index
+        matches = [(chem, example_labels[chem]) for chem in ti_df.index if chem in example_labels]
+        for j, (chem, label) in enumerate(matches):
+            x = float(ti_df.loc[chem, "TI_equal"])
+            ax.axvline(x, linestyle="--", linewidth=1.0)
+            # Stagger label heights to reduce overlap
+            y = ymax * (0.85 - 0.05 * (j % 6))
+            ax.text(
+                x, y, label, rotation=90, va="top", ha="center", fontsize=9,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7)
+            )
+    
     plt.tight_layout()
     plt.savefig(outdir / "ti_histogram.png", dpi=200)
     plt.close()
@@ -498,6 +591,11 @@ def main():
                         help="Range [lo hi] of candidate cluster counts for silhouette-based selection.")
     parser.add_argument("--random-state", type=int, default=42,
                         help="Random seed for deterministic behavior where applicable.")
+    parser.add_argument("--linkage", type=str, default="average", choices=["complete", "average"],
+                        help="Linkage method for hierarchical clustering (default: 'average').")
+    parser.add_argument("--examples-csv", type=str, default=None,
+                        help="Optional CSV with example phthalates to annotate on the TI histogram; "
+                             "expects columns ['name', 'inchi'] or ['name', 'smiles'].")
     args = parser.parse_args()
 
     # Logging config
@@ -534,8 +632,12 @@ def main():
         n_clusters=args.n_clusters,
         corr_threshold=args.corr_threshold,
         silhouette_range=(args.silhouette_range[0], args.silhouette_range[1]),
-        random_state=args.random_state
+        random_state=args.random_state,
+        linkage_method=args.linkage,
     )
+
+    # PCA broken-stick diagnostic (assay correlation spectrum)
+    pca_broken_stick_diagnostic(Xz)
 
     # Prepare labels aligned to assays order
     labels = np.zeros(len(assays), dtype=int)
@@ -550,6 +652,25 @@ def main():
 
     # TI computation
     ti_df = compute_ti(scores_df, var_explained)
+
+    # Load example phthalates and prepare labels (InChI -> short name)
+    example_labels: Dict[str, str] = {}
+    if args.examples_csv:
+        try:
+            example_labels = load_example_phthalates(Path(args.examples_csv))
+            if example_labels:
+                # Save a small table with their TI values (only those present)
+                rows = [
+                    (chem, example_labels[chem],
+                     float(ti_df.loc[chem, "TI_equal"]),
+                     float(ti_df.loc[chem, "TI_weighted"]))
+                    for chem in ti_df.index if chem in example_labels
+                ]
+                if rows:
+                    ex_df = pd.DataFrame(rows, columns=["chemical_id", "name", "TI_equal", "TI_weighted"])
+                    ex_df.to_csv(outdir / "example_phthalates_ti.csv", index=False)
+        except Exception as e:
+            logging.warning("Failed to process examples CSV: %s", e)
 
     # Save outputs
     save_outputs(
@@ -568,7 +689,8 @@ def main():
         Z=Z,
         t_line=t_line,
         ti_df=ti_df,
-        var_explained=var_explained
+        var_explained=var_explained,
+        example_labels=example_labels,
     )
 
     # Final log summary
