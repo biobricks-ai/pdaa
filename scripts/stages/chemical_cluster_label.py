@@ -48,6 +48,10 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 from sklearn.metrics import silhouette_samples
 
+import sys
+sys.path.append('./')  # so utility scripts can be found
+from scripts.utils.helpers import zscore_columns
+
 
 # ----------------------------- I/O and preprocessing -----------------------------
 
@@ -75,39 +79,6 @@ def load_data(path: Path) -> pd.DataFrame:
     df = df.astype(float)
     logging.info("Loaded matrix: %s (chemicals=%d, assays=%d)", path, df.shape[0], df.shape[1])
     return df
-
-
-def zscore_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Z-score each assay column (ddof=0). Drop zero-variance assays.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Raw activity matrix.
-
-    Returns
-    -------
-    z : pd.DataFrame
-        Column-standardized matrix with zero-variance assays removed.
-    dropped : list of str
-        Assay names that were dropped due to zero variance.
-    """
-    means = df.mean(axis=0)
-    stds = df.std(axis=0, ddof=0)
-
-    zero_var = stds[stds == 0.0].index.tolist()
-    if zero_var:
-        logging.warning("Dropping %d zero-variance assays.", len(zero_var))
-
-    keep = stds.index.difference(zero_var)
-    if len(keep) == 0:
-        raise ValueError("All assays have zero variance after standardization; nothing to cluster.")
-
-    z = (df[keep] - means[keep]) / stds[keep]
-    # For numerical stability (should not happen with std>0)
-    z = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    return z, zero_var
 
 
 # ----------------------------- distances and clustering -----------------------------
@@ -265,6 +236,7 @@ def _choose_k_by_silhouette(
         sil, n_eval = compute_silhouette_mean(D_square, labs, exclude_singletons=True)
         # If silhouette is nan (e.g., degenerate), treat as -inf
         score = -np.inf if np.isnan(sil) else sil
+        # print(f"k = {k:2d} | silhouette = {score:.4f}")
 
         if (score > best["sil"]) or (np.isclose(score, best["sil"]) and (best["k"] is None or k < best["k"])):
             best.update({"k": k, "sil": score, "labels": labs, "n_eval": n_eval})
@@ -583,9 +555,9 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--silhouette-range",
         type=int,
         nargs=2,
-        default=(5, 60),
+        default=(2, 60),
         metavar=("K_MIN", "K_MAX"),
-        help="Range [K_MIN K_MAX] for automatic silhouette selection [default: 5 60].",
+        help="Range [K_MIN K_MAX] for automatic silhouette selection [default: 2 60].",
     )
     parser.add_argument(
         "--linkage",

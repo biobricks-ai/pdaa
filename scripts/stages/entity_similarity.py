@@ -211,6 +211,7 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, u
         print(mask.sum(), "DART/ED assays found")
 
     ice_assays = uri_title_token[mask]
+    ice_assays.to_csv(resourcedir / 'ice_assays.csv', index=False)
     # ice_assays = uri_title_token
     print(f"Found {len(ice_assays)} DART-filtered ICE assays")
 

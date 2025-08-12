@@ -49,6 +49,10 @@ import matplotlib.pyplot as plt
 
 from rdkit import Chem
 
+import sys
+sys.path.append('./')  # so utility scripts can be found
+from scripts.utils.helpers import zscore_columns, pca_broken_stick_diagnostic
+
 # ----------------------------- I/O and preprocessing ----------------------------- #
 
 def load_data(input_path: Path) -> pd.DataFrame:
@@ -67,42 +71,6 @@ def load_data(input_path: Path) -> pd.DataFrame:
         logging.warning("Non-numeric dtypes detected; attempting to coerce to numeric.")
         df = df.apply(pd.to_numeric, errors="coerce")
     return df
-
-
-def zscore_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Z-score each assay (column) to zero mean, unit variance.
-
-    Drops assays with zero post-standardization variance (i.e., constant columns).
-
-    Returns
-    -------
-    Xz : DataFrame (standardized)
-    dropped : list of assay names dropped due to zero variance or all-NaN
-    """
-    # Compute column-wise mean and std (population std, ddof=0)
-    mu = df.mean(axis=0)
-    sigma = df.std(axis=0, ddof=0)
-
-    # Identify columns with zero or NaN std (constant or invalid)
-    zero_var = sigma.isna() | (sigma == 0)
-    dropped = df.columns[zero_var].tolist()
-    if dropped:
-        logging.warning("Dropping %d assays with zero variance or invalid std.", len(dropped))
-
-    keep_cols = df.columns[~zero_var]
-    Xz = (df[keep_cols] - mu[keep_cols]) / sigma[keep_cols]
-
-    # Check for NaNs after standardization; these indicate problematic input
-    if Xz.isna().any().any():
-        n_bad_cols = Xz.columns[Xz.isna().any(axis=0)].size
-        n_bad_cells = int(Xz.isna().sum().sum())
-        raise ValueError(
-            f"NaNs present after standardization: {n_bad_cells} NaNs across {n_bad_cols} assays. "
-            "Please provide a filled matrix."
-        )
-
-    return Xz, dropped
 
 
 # ----------------------------- Clustering ----------------------------- #
@@ -378,38 +346,7 @@ def compute_cluster_mean_scores(
     score_cols = [f"Cluster_{cid:03d}" for cid in range(1, C + 1)]
     return pd.DataFrame(scores, index=chemicals, columns=score_cols)
 
-# ----------------------------- PCA diagnostics ----------------------------- #
 
-def pca_broken_stick_diagnostic(Xz: pd.DataFrame) -> None:
-    """
-    Log a broken-stick diagnostic on the assay correlation spectrum.
-
-    For p assays, eigenvalue proportions (PCA on assay correlation matrix) are
-    compared to the broken-stick expectation. We log how many components exceed
-    the null and show the top few proportions vs the null.
-    """
-    p = Xz.shape[1]
-    if p < 2:
-        logging.info("Broken-stick diagnostic skipped (p<2).")
-        return
-
-    R = np.corrcoef(Xz.values, rowvar=False)
-    # Eigenvalues of a correlation matrix sum to p
-    evals = np.linalg.eigvalsh(R)  # ascending
-    props = evals[::-1] / float(p)  # descending proportions
-
-    # Broken-stick expected proportions b_k
-    # b_k = (1/p) * sum_{i=k}^p (1/i)
-    inv = 1.0 / np.arange(1, p + 1, dtype=float)
-    csum = np.cumsum(inv[::-1])[::-1]  # sums from k..p
-    broken = csum / float(p)
-
-    k_keep = int(np.sum(props > broken))
-    top = min(5, p)
-    pairs = " ; ".join([f"{i+1}:{props[i]:.3f}>{broken[i]:.3f}" if props[i] > broken[i]
-                        else f"{i+1}:{props[i]:.3f}≤{broken[i]:.3f}" for i in range(top)])
-    logging.info("Broken-stick diagnostic: components above null = %d (of %d); top comps (prop vs null): %s",
-                 k_keep, p, pairs)
 
 # ----------------------------- Toxicity Index ----------------------------- #
 
@@ -638,7 +575,7 @@ def main():
                         help="Manual number of clusters. If provided with --corr-threshold, this takes precedence.")
     parser.add_argument("--corr-threshold", type=float, default=None,
                         help="Correlation threshold τ in (0,1). Dendrogram cut at distance d = 1 - τ.")
-    parser.add_argument("--silhouette-range", type=int, nargs=2, default=[5, 60],
+    parser.add_argument("--silhouette-range", type=int, nargs=2, default=[2, 60],
                         help="Range [lo hi] of candidate cluster counts for silhouette-based selection.")
     parser.add_argument("--random-state", type=int, default=42,
                         help="Random seed for deterministic behavior where applicable.")

@@ -13,6 +13,9 @@ from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score
 from sklearn.pipeline import Pipeline
 
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+import logging
+
 from rdkit.Chem import (
     AllChem,
     Descriptors,
@@ -228,6 +231,38 @@ def get_descriptors(
 def z_scale_df(df: pd.DataFrame) -> pd.DataFrame:
     """Z-score normalize the dataframe by columns."""
     return (df - df.mean())/df.std()
+
+def zscore_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Z-score each assay column (ddof=0). Drop zero-variance assays.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Raw activity matrix.
+
+    Returns
+    -------
+    z : pd.DataFrame
+        Column-standardized matrix with zero-variance assays removed.
+    dropped : list of str
+        Assay names that were dropped due to zero variance.
+    """
+    means = df.mean(axis=0)
+    stds = df.std(axis=0, ddof=0)
+
+    zero_var = stds[stds == 0.0].index.tolist()
+    if zero_var:
+        logging.warning("Dropping %d zero-variance assays.", len(zero_var))
+
+    keep = stds.index.difference(zero_var)
+    if len(keep) == 0:
+        raise ValueError("All assays have zero variance after standardization; nothing to cluster.")
+
+    z = (df[keep] - means[keep]) / stds[keep]
+    # For numerical stability (should not happen with std>0)
+    z = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    return z, zero_var
 
 def get_linear_model(X: pd.DataFrame, Y: pd.DataFrame):
     """
@@ -894,3 +929,38 @@ def get_endpoint_series(df, endpoint, *, p_conversion = False, sentinel_threshol
     endpoint_series = endpoint_series.groupby(endpoint_series.index).mean()
 
     return endpoint_series
+
+# ----------------------------- PCA diagnostics ----------------------------- #
+
+def pca_broken_stick_diagnostic(Xz: pd.DataFrame) -> None:
+    """
+    Log a broken-stick diagnostic on the assay correlation spectrum.
+
+    For p assays, eigenvalue proportions (PCA on assay correlation matrix) are
+    compared to the broken-stick expectation. We log how many components exceed
+    the null and show the top few proportions vs. the null.
+    """
+    p = Xz.shape[1]
+    if p < 2:
+        logging.info("Broken-stick diagnostic skipped (p<2).")
+        return
+
+    R = np.corrcoef(Xz.values, rowvar=False)
+    # Eigenvalues of a correlation matrix sum to p
+    evals = np.linalg.eigvalsh(R)  # ascending
+    props = evals[::-1] / float(p)  # descending proportions
+
+    # Broken-stick expected proportions b_k
+    # b_k = (1/p) * sum_{i=k}^p (1/i)
+    inv = 1.0 / np.arange(1, p + 1, dtype=float)
+    csum = np.cumsum(inv[::-1])[::-1]  # sums from k..p
+    broken = csum / float(p)
+
+    k_keep = int(np.sum(props > broken))
+    top = min(5, p)
+    pairs = " ; ".join([f"{i+1}:{props[i]:.3f}>{broken[i]:.3f}" if props[i] > broken[i]
+                        else f"{i+1}:{props[i]:.3f}≤{broken[i]:.3f}" for i in range(top)])
+    logging.info("Broken-stick diagnostic: components above null = %d (of %d); top comps (prop vs. null): %s",
+                 k_keep, p, pairs)
+    
+    return k_keep
