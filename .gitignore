@@ -17,3 +17,5 @@ hdtworkdir/
 scratch.py
 
 *.bak
+
+assay_lists.txt

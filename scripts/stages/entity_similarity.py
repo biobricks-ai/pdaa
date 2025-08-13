@@ -18,6 +18,7 @@ import sys
 sys.path.append('./')
 import stages.utils.pdaa as pdaa
 import stages.utils.sparql as sparql
+from scripts.utils.helpers import clean_title
 
 resourcedir = pathlib.Path('resources')
 
@@ -141,13 +142,57 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, u
     print("Building phthalate ICE activity dataframe...")
     
     print("Querying PDAA graph for URI, title, and token mappings...")
-    uri_title_token = sparql.Query(pdaa.pdaa_graph) \
-        .select_typed({'uri': str, 'pp': str, 'title': str, 'token': int}) \
-        .where('?pp a toxindex:predicted_property') \
-        .where('?pp <http://purl.org/dc/elements/1.1/title> ?title') \
-        .where('?pp rdf:value ?token') \
-        .where('?pp <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
-        .execute().groupby('uri').first().reset_index()
+    # uri_title_token = sparql.Query(pdaa.pdaa_graph) \
+    #     .select_typed({'uri': str, 'pp': str, 'title': str, 'token': int}) \
+    #     .where('?pp a toxindex:predicted_property') \
+    #     .where('?pp <http://purl.org/dc/elements/1.1/title> ?title') \
+    #     .where('?pp rdf:value ?token') \
+    #     .where('?pp <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
+    #     .execute().groupby('uri').first().reset_index()
+
+    # uri_title_token = sparql.Query(pdaa.pdaa_graph) \
+    #     .select_typed({'uri': str, 'pp': str, 'title': str, 'token': int}) \
+    #     .where('?pp a toxindex:predicted_property') \
+    #     .where('?pp <http://purl.org/dc/elements/1.1/title> ?title') \
+    #     .where('?pp rdf:value ?token') \
+    #     .where('?pp <http://purl.org/dc/elements/1.1/has_identifier> ?uri') \
+    #     .execute()
+    # # uri_title_token_grouped = uri_title_token.groupby('uri').first().reset_index()
+
+    q = (
+        sparql.Query(pdaa.pdaa_graph)
+        .select_typed({
+            'uri': str,
+            'pp': str,
+            'token': int,
+            'title_uri_dc': str,
+            'title_uri_rdfs': str,
+            'title_pp': str,
+        })
+        .where('?pp a toxindex:predicted_property')
+        .where('?pp rdf:value ?token')
+        .where('?pp <http://purl.org/dc/elements/1.1/has_identifier> ?uri')
+        .where('OPTIONAL { ?uri <http://purl.org/dc/elements/1.1/title> ?title_uri_dc }')
+        .where('OPTIONAL { ?uri <http://www.w3.org/2000/01/rdf-schema#label> ?title_uri_rdfs }')
+        .where('OPTIONAL { ?pp  <http://purl.org/dc/elements/1.1/title> ?title_pp }')
+    )
+
+    uri_title_token = q.execute()
+
+    # Prefer assay-node title; fall back to rdfs:label; then to pp title
+    if 'title' in uri_title_token.columns:
+        uri_title_token = uri_title_token.drop(columns=['title'])
+
+    # Build a single 'title' column from whatever exists; fall back to title_pp
+    title_cols = [c for c in ['title_uri_dc', 'title_uri_rdfs', 'title_pp'] if c in uri_title_token.columns]
+    if title_cols:
+        uri_title_token['title'] = uri_title_token[title_cols].bfill(axis=1).iloc[:, 0]
+    else:
+        # In your current snapshot, this hits: only title_pp exists
+        uri_title_token['title'] = uri_title_token['title_pp']
+
+    uri_title_token = uri_title_token.drop(columns=title_cols, errors='ignore')
+
 
     if mask_method == 'list':
         dart_path = pathlib.Path(resourcedir / 'DART_endpoints.txt')
@@ -161,10 +206,10 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, u
             ]
 
         uri_title_token['clean_title'] = (
-            uri_title_token['title']
-            .str.strip()
-            .str.lower()
-            .apply(lambda s: re.sub(r'[^A-Za-z0-9]', '', s))
+            uri_title_token['title'].apply(clean_title)
+            # .str.strip()
+            # .str.lower()
+            # .apply(lambda s: re.sub(r'[^A-Za-z0-9]', '', s))
         )
 
         # build a boolean mask: True if any dart_clean entry is a substring
@@ -212,17 +257,57 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, u
         print(mask.sum(), "DART/ED assays found")
 
     elif mask_method == 'categories':
-        from scripts.utils.helpers import clean_title
         df = pd.read_csv(resourcedir / 'assay_strength.csv')
+        df_titles = set(df['title'].dropna().map(clean_title))
+        print(f"Using {len(df_titles)} assay titles from assay_strength.csv")
 
-        mask = uri_title_token['title'].apply(clean_title).isin(df['title'].tolist())
+        mask = uri_title_token['title'].map(clean_title).isin(df_titles)
+
+        # mask = uri_title_token['title'].apply(clean_title).isin(df['title'].apply(clean_title))
+
+        def fuzzy_match():
+            lhs = uri_title_token['title'].astype(str).apply(clean_title).unique()
+            rhs = df['title'].astype(str).apply(clean_title).unique()
+            lhs_set, rhs_set = set(lhs), set(rhs)
+
+            from rapidfuzz import process as rf_process, fuzz as rf_fuzz
+            def _best_match(query: str, choices: tuple[str, ...]) -> tuple[str, int]:
+                # token_set_ratio is robust to token order/duplication and spacing differences
+                m = rf_process.extractOne(query, choices, scorer=rf_fuzz.token_set_ratio)
+                if m is None:
+                    return ("", 0)
+                match, score, _ = m
+                return (match, score)
+            
+            rhs_minus_lhs = sorted(rhs_set - lhs_set)
+
+            # Compute top matches and write CSV
+            choices = tuple(lhs_set)  # tuple for faster indexing inside matcher
+            rows = []
+            for q in rhs_minus_lhs:
+                match, score = _best_match(q, choices)
+                rows.append({"rhs_title": q, "lhs_best_match": match, "score": score})
+
+            out_path = resourcedir / "assay_fuzzy_map.csv"
+            pd.DataFrame(rows).sort_values("score", ascending=False).to_csv(out_path, index=False)
+            print(f"Wrote {len(rows)} rows to {out_path}")
+
+            
+        if len(df_titles) != np.sum(mask):
+            fuzzy_match()
+            sys.exit(0)
+        # with open('assay_lists.txt', 'w') as f:
+        #     f.write('lhs_set:\n')
+        #     f.write(repr(lhs_set))
+
+        #     f.write('\n\nrhs_set:\n')
+        #     f.write(repr(rhs_set))
+
+        # breakpoint()
 
     print(f"Using mask to filter {len(uri_title_token)} assays to {mask.sum()} relevant assays")
     ice_assays = uri_title_token[mask]
     ice_assays.to_csv(resourcedir / 'ice_assays.csv', index=False)
-    # ice_assays = uri_title_token
-    print(f"Found {len(ice_assays)} DART-filtered ICE assays")
-
 
     print("Fetching predictions from SQLite...")
     with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
@@ -272,6 +357,7 @@ phthalate_df = build_phthalate_ice_activity_df(
 
 # region HEATMAP & DENSITY OF PHTHALATE ACTIVITY ===============================
 def cluster_rows_and_make_heatmap(
+    *,
     z_scale=False,
     group_clusters=True,
     color_by = 'isomer',
@@ -279,6 +365,7 @@ def cluster_rows_and_make_heatmap(
     weighted_mean=False,
     PCA_keep_upto=1.0,
     active_top=True,
+    plot_PCA_variance=False,
 ):
     activity_matrix = phthalate_df.groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     activity_matrix = activity_matrix.pivot(index='inchi', columns='title', values='positive_prediction')
@@ -295,8 +382,6 @@ def cluster_rows_and_make_heatmap(
 
     # Fill any NaN values with 0 for clustering
     activity_matrix_filled = activity_matrix.fillna(0)
-    # # flip the matrix so that higher activity is at the top
-    # activity_matrix_filled = activity_matrix_filled.iloc[::-1]
     # save the filled activitiy matrix
     activity_matrix_filled.to_parquet(cachedir / 'activity_matrix_filled.parquet')
 
@@ -344,7 +429,7 @@ def cluster_rows_and_make_heatmap(
     # row_linkage = hierarchy.linkage(activity_matrix_filled, method='average')
     # cluster_order = hierarchy.leaves_list(row_linkage)
 
-    if (PCA_components is not None) and weighted_mean:
+    if plot_PCA_variance:
         # quick plot of pca explained variance ratio for debugging
         plt.figure(figsize=(10, 5))
         plt.bar(range(len(pca.explained_variance_ratio_)), np.cumsum(pca.explained_variance_ratio_))
@@ -353,7 +438,6 @@ def cluster_rows_and_make_heatmap(
         plt.ylabel('Cumulative Explained Variance Ratio')
         plt.title('PCA Explained Variance Ratio')
         plt.show()
-        sys.exit(0)  # while debugging
         # weighted mean based on the percent variance explained by each PCA component
         mean_activities = (activity_matrix_filled * pca.explained_variance_ratio_).sum(axis=1)/ pca.explained_variance_ratio_.sum()
     else:
@@ -366,20 +450,17 @@ def cluster_rows_and_make_heatmap(
         for i in range(n_clusters):
             cluster_indices = np.where(row_clusters == i)[0]
             sorted_indices = cluster_indices[np.argsort(mean_activities.iloc[cluster_indices])]
-            if active_top:
-                # Reverse the order so that higher activity is at the top
-                sorted_indices = sorted_indices[::-1]
             cluster_order.extend(sorted_indices)
     else:
         # Sort by mean activity only
         cluster_order = np.argsort(mean_activities)
-        if active_top:
-            # Reverse the order so that higher activity is at the top
-            cluster_order = cluster_order[::-1]
+
+    if active_top:
+        # Reverse the order so that higher activity is at the top
+        cluster_order = cluster_order[::-1]
 
     # Reorder the matrix
     reordered_matrix = activity_matrix_filled.iloc[cluster_order, col_order]
-    # reordered_matrix = activity_matrix_filled.iloc[cluster_order[::-1], col_order]
     # ─── Map each InChI to its new row index ─────────────────────────────
     reordered_indices = {
         inchi: pos
@@ -448,22 +529,6 @@ def cluster_rows_and_make_heatmap(
         # Use the cluster colors instead
         row_colors = [base_colors[row_clusters[i]] for i in cluster_order]
 
-    # g = sns.clustermap(
-    #     reordered_matrix,
-    #     # square=True,       # ← force equal-sized cells
-    #     cbar_kws={'drawedges': False},  # disable seaborn’s built-in bar
-    #     cmap=diverging_colormap if z_scale else 'viridis',
-    #     row_cluster=True, col_cluster=False,
-    #     row_colors=row_colors,
-    #     xticklabels=False, yticklabels=False,
-    #     figsize=(18, 9),
-    #     cbar_pos=(0.95, 0.3, 0.02, 0.4),
-    #     dendrogram_ratio=(0.10, 0.05),
-    #     tree_kws={'linewidths': 0.5},
-    #     vmin=-3, vmax=+3,
-    # )
-    # plt.show()
-    # return
     xlabel = 'Principal Components' if PCA_components else 'DART or ED Assays'
     g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black', z_scale=z_scale, xlabel=xlabel)
 
@@ -487,7 +552,6 @@ def cluster_rows_and_make_heatmap(
         cluster_colors = base_colors
     bar_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
     ax_bar.barh(range(len(mean_activity)), mean_activity, color=bar_colors)
-    # ax_bar.barh(range(len(mean_activity)), mean_activity[::-1], color=bar_colors[::-1])
 
     # ─── Collect & sort examples ──────────────────────────────────────────
     examples = sorted(
@@ -602,12 +666,7 @@ def cluster_rows_and_make_heatmap(
         top=1.0,
         bottom=0.06
     )    
-    # g.figure.subplots_adjust(
-    #     left=0.02,   # plenty of space for row colors / dendrogram
-    #     right=0.9,  # leave room for bar & legend
-    #     top=0.98,
-    #     bottom=0.06
-    # )
+
     g.figure.savefig(cachedir / "phthalate_activity_heatmap.png", dpi=600)
     plt.close(g.figure)
 

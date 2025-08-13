@@ -966,16 +966,108 @@ def pca_broken_stick_diagnostic(Xz: pd.DataFrame) -> None:
     
     return k_keep
 
+# def clean_title(title: str) -> str:
+#     """
+#     Clean a title string by removing unwanted characters and normalizing spaces.
+#     """
+#     # Remove unwanted characters and normalize spaces
+#     cleaned_title = re.sub(r'[^\w\s]', ' ', title)  # replace punctuation with spaces
+#     cleaned_title = re.sub(r'_', ' ', cleaned_title)  # replace underscores with spaces
+#     cleaned_title = re.sub(r'\s+', ' ', cleaned_title)  # normalize spaces
+#     cleaned_title = cleaned_title.strip()  # remove leading/trailing spaces
+#     cleaned_title = cleaned_title.lower()  # Convert to lowercase for consistency
+#     return cleaned_title
+
+import unicodedata
+
+# Map common Greek letters to names; extend if you see others in your data
+_GREEK_MAP = str.maketrans({
+    'α':'alpha','β':'beta','γ':'gamma','δ':'delta','ε':'epsilon','ζ':'zeta','η':'eta','θ':'theta',
+    'ι':'iota','κ':'kappa','λ':'lambda','μ':'mu','ν':'nu','ξ':'xi','ο':'omicron','π':'pi','ρ':'rho',
+    'σ':'sigma','ς':'sigma','τ':'tau','υ':'upsilon','φ':'phi','χ':'chi','ψ':'psi','ω':'omega',
+    'Α':'alpha','Β':'beta','Γ':'gamma','Δ':'delta','Ε':'epsilon','Ζ':'zeta','Η':'eta','Θ':'theta',
+    'Ι':'iota','Κ':'kappa','Λ':'lambda','Μ':'mu','Ν':'nu','Ξ':'xi','Ο':'omicron','Π':'pi','Ρ':'rho',
+    'Σ':'sigma','Τ':'tau','Υ':'upsilon','Φ':'phi','Χ':'chi','Ψ':'psi','Ω':'omega',
+})
+
+# # Conservative roman-numeral normalizer (standalone tokens I..X only)
+# _ROMAN_RE  = re.compile(r'\b(i{1,3}|iv|v|vi{0,3}|ix|x)\b', re.IGNORECASE)
+# _ROMAN_MAP = {'i':'1','ii':'2','iii':'3','iv':'4','v':'5','vi':'6','vii':'7','viii':'8','ix':'9','x':'10'}
+_ROMAN_TOKEN_RE = re.compile(r'(?<!\w)([IVXLCDMivxlcdm]{2,})(?!\w)')
+
+def roman_to_int(s: str) -> int:
+    """Converts a Roman numeral string to its integer equivalent.
+
+    Args:
+        s: The Roman numeral string (e.g., "MCMXCIV").
+
+    Returns:
+        The integer equivalent of the Roman numeral.
+    """
+    roman_values = {
+        'I': 1,
+        'V': 5,
+        'X': 10,
+        'L': 50,
+        'C': 100,
+        'D': 500,
+        'M': 1000,
+        'i': 1,
+        'v': 5,
+        'x': 10,
+        'l': 50,
+        'c': 100,
+        'd': 500,
+        'm': 1000,
+    }
+
+    total = 0
+    prev_value = 0  # To handle subtractive cases (e.g., IV, IX)
+
+    # Iterate through the Roman numeral string in reverse
+    for char in reversed(s):
+        current_value = roman_values[char]
+
+        # If the current value is less than the previous value, it's a subtractive case
+        if current_value < prev_value:
+            total -= current_value
+        else:
+            total += current_value
+
+        prev_value = current_value
+
+    return total
+
+def _roman_to_arabic(text: str) -> str:
+    # return _ROMAN_RE.sub(lambda m: _ROMAN_MAP[m.group(0).lower()], text)
+    # Replace each standalone Roman token with its Arabic value using roman_to_int.
+    def _repl(m: re.Match) -> str:
+        token = m.group(1)
+        try:
+            return str(roman_to_int(token))
+        except KeyError:
+            # Non-Roman character slipped through; leave as-is.
+            return token
+    return _ROMAN_TOKEN_RE.sub(_repl, text)
+
 def clean_title(title: str) -> str:
     """
-    Clean a title string by removing unwanted characters and normalizing spaces.
+    Normalize assay titles for equality matching across data sources.
+
+    Steps:
+    - Unicode NFKC fold to canonicalize look-alike chars (e.g., micro sign).
+    - Replace Greek letters with names (β→beta, κ→kappa, μ→mu, …).
+    - Optionally normalize standalone roman numerals (II→2).
+    - Replace punctuation/underscores with spaces; collapse whitespace; lowercase.
     """
-    # Remove unwanted characters and normalize spaces
-    cleaned_title = re.sub(r'[^\w\s]', ' ', title)  # remove punctuation
-    cleaned_title = re.sub(r'\s+', ' ', cleaned_title)  # normalize spaces
-    cleaned_title = cleaned_title.strip()  # remove leading/trailing spaces
-    cleaned_title = cleaned_title.lower()  # Convert to lowercase for consistency
-    return cleaned_title
+    x = unicodedata.normalize('NFKC', str(title))
+    x = x.translate(_GREEK_MAP)
+    x = _roman_to_arabic(x)
+    x = re.sub(r'[^\w\s]', ' ', x)   # punctuation → spaces
+    x = re.sub(r'_', ' ', x)         # underscores → spaces
+    x = re.sub(r'\s+', ' ', x)       # collapse runs of whitespace
+    return x.strip().lower()
+
 
 def get_assay_strength(fullpred: List[Dict], category_label: str ='endocrine disruption', to_clean: bool = False) -> List[Tuple[str, float]]:
     """
