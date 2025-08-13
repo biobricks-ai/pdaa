@@ -138,9 +138,8 @@ isomers_list = ["ortho_phthalate", "meta_phthalate", "para_phthalate"]
 
 # which phthalate has the lowest mean ICE activity?
 # region ICE ACTIVITY ===============================================================
-def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, use_ed = True):
-    print("Building phthalate ICE activity dataframe...")
-    
+
+def get_assays_from_graph(mask_method='prediction', use_dart = True, use_ed = True):
     print("Querying PDAA graph for URI, title, and token mappings...")
     # uri_title_token = sparql.Query(pdaa.pdaa_graph) \
     #     .select_typed({'uri': str, 'pp': str, 'title': str, 'token': int}) \
@@ -270,14 +269,73 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, u
             rhs = df['title'].astype(str).apply(clean_title).unique()
             lhs_set, rhs_set = set(lhs), set(rhs)
 
-            from rapidfuzz import process as rf_process, fuzz as rf_fuzz
-            def _best_match(query: str, choices: tuple[str, ...]) -> tuple[str, int]:
-                # token_set_ratio is robust to token order/duplication and spacing differences
-                m = rf_process.extractOne(query, choices, scorer=rf_fuzz.token_set_ratio)
-                if m is None:
+            # from rapidfuzz import process as rf_process, fuzz as rf_fuzz
+            # def _best_match(query: str, choices: tuple[str, ...]) -> tuple[str, int]:
+            #     # token_set_ratio is robust to token order/duplication and spacing differences
+            #     m = rf_process.extractOne(query, choices, scorer=rf_fuzz.token_set_ratio)
+            #     if m is None:
+            #         return ("", 0)
+            #     match, score, _ = m
+            #     return (match, score)
+
+
+            # Lightweight tokenization with domain stop-words removed
+            # DOMAIN_STOP = {
+            #     "assay","screen","screening","activity","binding","viability","toxicity","cell","cells",
+            #     "inhibition","inhibitor","agonist","antagonist","receptor","human","mouse","rat","reporter",
+            #     "activation","response","signal","pathway","transcription","luciferase","bla","hla","beta",
+            #     "alpha","gamma","kappa","delta","sigma","mu","upregulation","downregulation","induction",
+            #     "factor","nuclear","hormone","dependent","independent","modulation","evaluation","measurement",
+            #     "test","analysis","detection","profiling","target","targets","gene","protein","kinase","channel"
+            # }
+            DOMAIN_STOP = set()
+            _WORD_RE = re.compile(r"[a-z0-9]+")
+
+            def _tokens_wo_stop(s: str) -> set[str]:
+                return {t for t in _WORD_RE.findall(str(s).lower()) if t not in DOMAIN_STOP}
+
+            def _coverage(a: set[str], b: set[str]) -> float:
+                # fraction of a covered by b
+                return (len(a & b) / len(a)) if a else 0.0
+
+            # Optional: combine with a character-level similarity to downweight spurious overlaps
+            from rapidfuzz import fuzz as rf_fuzz
+            def _tsr(a: str, b: str) -> float:
+                return rf_fuzz.token_set_ratio(a, b) / 100.0
+
+            def _best_match(
+                query: str,
+                choices: tuple[str, ...],
+                *,
+                choice_tokens: dict[str, set[str]] | None = None,
+                mode: str = "min_coverage_times_tsr"  # "min_coverage" or "min_coverage_times_tsr"
+            ) -> tuple[str, int]:
+                """
+                Returns (best_match, score_0_100), where score is a stricter similarity.
+                - min_coverage:     score = 100 * min(cov(query→cand), cov(cand→query))
+                - ..._times_tsr:    score *= token_set_ratio(query, cand) to guard with char-level similarity.
+                """
+                if not choices:
                     return ("", 0)
-                match, score, _ = m
-                return (match, score)
+
+                qtok = _tokens_wo_stop(query)
+                best_match, best_score = "", -1.0
+
+                for cand in choices:
+                    ctok = (choice_tokens.get(cand) if choice_tokens is not None else _tokens_wo_stop(cand)) or _tokens_wo_stop(cand)
+                    cov_qc = _coverage(qtok, ctok)
+                    cov_cq = _coverage(ctok, qtok)
+                    two_way = min(cov_qc, cov_cq)
+                    if mode == "min_coverage":
+                        score = two_way
+                    else:
+                        score = 0.0 if two_way == 0.0 else two_way * _tsr(query, cand)
+                    if score > best_score:
+                        best_score = score
+                        best_match = cand
+
+                return best_match, 100 * best_score
+
             
             rhs_minus_lhs = sorted(rhs_set - lhs_set)
 
@@ -307,6 +365,28 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, u
 
     print(f"Using mask to filter {len(uri_title_token)} assays to {mask.sum()} relevant assays")
     ice_assays = uri_title_token[mask]
+
+    return ice_assays
+
+def get_assays_from_df():
+    """
+    Load the assay_strength.csv file and return a DataFrame with the assays.
+    """
+    df = pd.read_csv(resourcedir / 'assay_strength.csv')
+    ice_assays = df.drop_duplicates('title')
+    # Add NaN values for 'uri' column
+    ice_assays['uri'] = np.nan
+    print(f"Loaded {len(ice_assays)} assays from assay_strength.csv")
+    return ice_assays
+
+def build_phthalate_ice_activity_df(mask_method='prediction'):
+    print("Building phthalate ICE activity dataframe...")
+    
+    if mask_method == 'categories':
+        ice_assays = get_assays_from_df()
+    else:
+        ice_assays = get_assays_from_graph(mask_method=mask_method, use_dart=True, use_ed=True)
+
     ice_assays.to_csv(resourcedir / 'ice_assays.csv', index=False)
 
     print("Fetching predictions from SQLite...")
@@ -382,6 +462,7 @@ def cluster_rows_and_make_heatmap(
 
     # Fill any NaN values with 0 for clustering
     activity_matrix_filled = activity_matrix.fillna(0)
+    print(f"Activity matrix shape: {activity_matrix_filled.shape}")
     # save the filled activitiy matrix
     activity_matrix_filled.to_parquet(cachedir / 'activity_matrix_filled.parquet')
 

@@ -1069,27 +1069,59 @@ def clean_title(title: str) -> str:
     return x.strip().lower()
 
 
-def get_assay_strength(fullpred: List[Dict], category_label: str ='endocrine disruption', to_clean: bool = False) -> List[Tuple[str, float]]:
-    """
-    Get the strength of the specified category from the fullpred predictions.
-    """
-    assay_strength = []
+# def get_assay_strength(fullpred: List[Dict], category_label: str ='endocrine disruption', to_clean: bool = False) -> List[Tuple[str, float]]:
+#     """
+#     Get the strength of the specified category from the fullpred predictions.
+#     """
+#     assay_strength = []
 
-    if to_clean:
-        # Clean the assay titles for consistency
-        f = lambda title: clean_title(title)
-    else:
-        f = lambda title: title
+#     if to_clean:
+#         # Clean the assay titles for consistency
+#         f = lambda title: clean_title(title)
+#     else:
+#         f = lambda title: title
+
+#     for fp in fullpred:
+#         prop = fp['property']
+#         categories = prop['categories']  # list of dicts
+
+#         for category in categories:
+#             if category['category'] == category_label:
+#                 assay_strength.append(
+#                     (f(prop['title']), category['strength'])
+#                 )
+#                 break
+
+#     return assay_strength  # can cast to set or dict if needed
+
+def get_assay_strength(fullpred: List[Dict], category_label: str = 'endocrine disruption', to_clean: bool = False) -> List[Tuple[int, str, float]]:
+    """
+    Return (property_token, normalized_title, strength) for the requested category (ED).
+    Falls back to parsing the token from an identifier if needed.
+    """
+    assay_strength: list[tuple[int, str, float]] = []
+
+    f = clean_title if to_clean else (lambda s: s)
 
     for fp in fullpred:
         prop = fp['property']
-        categories = prop['categories']  # list of dicts
+        categories = prop.get('categories', [])  # list[dict]
 
-        for category in categories:
-            if category['category'] == category_label:
-                assay_strength.append(
-                    (f(prop['title']), category['strength'])
-                )
+        # Prefer explicit tokens, else fall back to parsing the trailing number
+        token = (
+            fp.get('property_token')
+            or prop.get('token')
+        )
+        if token is None:
+            ident = str(prop.get('identifier', ''))
+            m = re.search(r'(\d+)$', ident)
+            token = int(m.group(1)) if m else None
+        if token is None:
+            continue  # cannot key this record without a token
+
+        for c in categories:
+            if c.get('category') == category_label:
+                assay_strength.append((int(token), f(prop.get('title', '')), float(c.get('strength', 0.0))))
                 break
 
-    return assay_strength  # can cast to set or dict if needed
+    return assay_strength

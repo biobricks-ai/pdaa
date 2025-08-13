@@ -91,6 +91,18 @@ def compute_row_metrics(rhs: str, lhs: str) -> dict:
         "n_tokens_lhs_wo_stop": len(set(tokens_wo_stop(lhs))),
     }
 
+def print_indented(df: pd.DataFrame, indent_level: int = 1):
+    """
+    Print DataFrame with indentation for better readability.
+    """
+    indent = '\t' * indent_level
+    print_str = df.to_string(index=False, header=True)
+    print_lines = print_str.split('\n')
+    for line in print_lines:
+        print(indent + line)
+    # for _, row in df.iterrows():
+    #     print(indent + str(row.to_dict()))
+
 def enrich_csv(in_path: Path) -> Path:
     df = pd.read_csv(in_path)
     required = {"rhs_title", "lhs_best_match", "score"}
@@ -141,6 +153,12 @@ def enrich_csv(in_path: Path) -> Path:
         "score<70": int((out["token_set_ratio"] < 70).sum()),
     })
     print(f"Wrote: {out_path}")
+
+    print("Strong candidates:")
+    print_indented(out[out["flag_strong_candidate"]][["rhs_title", "lhs_best_match"]])
+
+    print("\n\nOverinflated suspects:")
+    print_indented(out[out["flag_overinflated"]][["rhs_title", "lhs_best_match"]])
     return out_path
 
 def main():
