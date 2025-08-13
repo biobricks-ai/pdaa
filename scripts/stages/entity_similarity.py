@@ -29,6 +29,7 @@ diverging_colormap = 'vlag'  # okay, too washed out
 def _styled_heatmap(
         matrix, row_colors, *, dpi=600,
         fontcolor='white', linecolor='black', z_scale=False,
+        xlabel = 'DART or ED Assays',
 ):
     """
     Wrapper around seaborn.clustermap with the same visual
@@ -95,7 +96,7 @@ def _styled_heatmap(
     g.ax_col_dendrogram.set_visible(show_dendrogram)
 
     # g.ax_heatmap.set_xlabel('DART or ED Assays', color=fontcolor, fontsize=20)
-    g.ax_heatmap.set_xlabel('Principal Components', color=fontcolor, fontsize=20)
+    g.ax_heatmap.set_xlabel(xlabel, color=fontcolor, fontsize=20)
 
     # Label the colorbar
     cbar = g.ax_heatmap.collections[0].colorbar
@@ -128,8 +129,8 @@ example_inchi2name = {inchi: name for inchi, name in zip(example_inchi, example_
 for name, weight in zip(example_names, example_weights):
     print(f"{name}: {weight:.2f}")
 
-# run the model on the example phthalates
-pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
+# # run the model on the example phthalates (nly needs to be done once)
+# pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
 
 # possible isomers to look for
 isomers_list = ["ortho_phthalate", "meta_phthalate", "para_phthalate"]
@@ -139,7 +140,7 @@ isomers_list = ["ortho_phthalate", "meta_phthalate", "para_phthalate"]
 def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, use_ed = True):
     print("Building phthalate ICE activity dataframe...")
     
-    print("Querying PDAA graph for URI, title and token mappings...")
+    print("Querying PDAA graph for URI, title, and token mappings...")
     uri_title_token = sparql.Query(pdaa.pdaa_graph) \
         .select_typed({'uri': str, 'pp': str, 'title': str, 'token': int}) \
         .where('?pp a toxindex:predicted_property') \
@@ -210,11 +211,17 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, u
 
         print(mask.sum(), "DART/ED assays found")
 
+    elif mask_method == 'categories':
+        from scripts.utils.helpers import clean_title
+        df = pd.read_csv(resourcedir / 'assay_strength.csv')
+
+        mask = uri_title_token['title'].apply(clean_title).isin(df['title'].tolist())
+
+    print(f"Using mask to filter {len(uri_title_token)} assays to {mask.sum()} relevant assays")
     ice_assays = uri_title_token[mask]
     ice_assays.to_csv(resourcedir / 'ice_assays.csv', index=False)
     # ice_assays = uri_title_token
     print(f"Found {len(ice_assays)} DART-filtered ICE assays")
-
 
 
     print("Fetching predictions from SQLite...")
@@ -233,7 +240,7 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, u
         raise
 
     print("Processing predictions data...")
-    df = ice_preds.sort_values('positive_prediction', ascending=False)[['inchi', 'property_token', 'positive_prediction']]
+    df = ice_preds.sort_values('positive_prediction', ascending=True)[['inchi', 'property_token', 'positive_prediction']]
     df = df.groupby(['inchi','property_token'])['positive_prediction'].mean().reset_index()
 
     inchi_mol_df = df[['inchi']].drop_duplicates()
@@ -257,19 +264,29 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_dart = True, u
     print(f"Final dataset contains {len(df3)} rows")
     return df3
 
-phthalate_df = build_phthalate_ice_activity_df()[['uri','title','inchi','mol','positive_prediction']]
+phthalate_df = build_phthalate_ice_activity_df(
+    mask_method='categories',
+)[['uri','title','inchi','mol','positive_prediction']]
 
 # endregion
 
 # region HEATMAP & DENSITY OF PHTHALATE ACTIVITY ===============================
-def cluster_rows_and_make_heatmap(z_scale=False, group_clusters=True, color_by = 'isomer', PCA_components=50, weighted_mean=False):
+def cluster_rows_and_make_heatmap(
+    z_scale=False,
+    group_clusters=True,
+    color_by = 'isomer',
+    PCA_components=50,
+    weighted_mean=False,
+    PCA_keep_upto=1.0,
+    active_top=True,
+):
     activity_matrix = phthalate_df.groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     activity_matrix = activity_matrix.pivot(index='inchi', columns='title', values='positive_prediction')
 
     inchi_activity_counts = phthalate_df.reset_index().groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     inchi_activity_counts['active'] = inchi_activity_counts['positive_prediction'] > 0.6
     inchi_activity = inchi_activity_counts.groupby('inchi')['active'].mean().reset_index()
-    inchi_activity.sort_values('active', ascending=False)
+    inchi_activity.sort_values('active', ascending=True)
     inchi_activity.to_csv(cachedir / 'inchi_activity.csv', index=False)
 
     # Cluster the data using KMeans instead of hierarchical clustering
@@ -278,17 +295,27 @@ def cluster_rows_and_make_heatmap(z_scale=False, group_clusters=True, color_by =
 
     # Fill any NaN values with 0 for clustering
     activity_matrix_filled = activity_matrix.fillna(0)
+    # # flip the matrix so that higher activity is at the top
+    # activity_matrix_filled = activity_matrix_filled.iloc[::-1]
     # save the filled activitiy matrix
     activity_matrix_filled.to_parquet(cachedir / 'activity_matrix_filled.parquet')
 
     if PCA_components is not None:
         from sklearn.decomposition import PCA
         # use the PCA matrix instead of the original activity matrix
-        pca = PCA(n_components=50)
+        pca = PCA(n_components=PCA_components)
+        if PCA_keep_upto < 1.0:
+            # keep only the components that explain at least PCA_keep_upto of the variance
+            pca.fit(activity_matrix_filled)
+            explained_variance = np.cumsum(pca.explained_variance_ratio_)
+            # use np.argmax to find the first index where explained_variance >= PCA_keep_upto
+            PCA_components = np.argmax(explained_variance >= PCA_keep_upto) + 1
+            print(f"Keeping {PCA_components} PCA components to explain at least {PCA_keep_upto*100:.1f}% of the variance")
+            pca = PCA(n_components=PCA_components)
         activity_matrix_filled = pd.DataFrame(
             pca.fit_transform(activity_matrix_filled),
             index=activity_matrix_filled.index,
-            columns=[f'PC{i+1}' for i in range(50)]
+            columns=[f'PC{i+1}' for i in range(PCA_components)]
         )
 
     if z_scale:
@@ -318,6 +345,15 @@ def cluster_rows_and_make_heatmap(z_scale=False, group_clusters=True, color_by =
     # cluster_order = hierarchy.leaves_list(row_linkage)
 
     if (PCA_components is not None) and weighted_mean:
+        # quick plot of pca explained variance ratio for debugging
+        plt.figure(figsize=(10, 5))
+        plt.bar(range(len(pca.explained_variance_ratio_)), np.cumsum(pca.explained_variance_ratio_))
+        plt.ylim(0, 1)
+        plt.xlabel('Principal Component')
+        plt.ylabel('Cumulative Explained Variance Ratio')
+        plt.title('PCA Explained Variance Ratio')
+        plt.show()
+        sys.exit(0)  # while debugging
         # weighted mean based on the percent variance explained by each PCA component
         mean_activities = (activity_matrix_filled * pca.explained_variance_ratio_).sum(axis=1)/ pca.explained_variance_ratio_.sum()
     else:
@@ -330,13 +366,20 @@ def cluster_rows_and_make_heatmap(z_scale=False, group_clusters=True, color_by =
         for i in range(n_clusters):
             cluster_indices = np.where(row_clusters == i)[0]
             sorted_indices = cluster_indices[np.argsort(mean_activities.iloc[cluster_indices])]
+            if active_top:
+                # Reverse the order so that higher activity is at the top
+                sorted_indices = sorted_indices[::-1]
             cluster_order.extend(sorted_indices)
     else:
         # Sort by mean activity only
         cluster_order = np.argsort(mean_activities)
+        if active_top:
+            # Reverse the order so that higher activity is at the top
+            cluster_order = cluster_order[::-1]
 
     # Reorder the matrix
     reordered_matrix = activity_matrix_filled.iloc[cluster_order, col_order]
+    # reordered_matrix = activity_matrix_filled.iloc[cluster_order[::-1], col_order]
     # ─── Map each InChI to its new row index ─────────────────────────────
     reordered_indices = {
         inchi: pos
@@ -421,7 +464,8 @@ def cluster_rows_and_make_heatmap(z_scale=False, group_clusters=True, color_by =
     # )
     # plt.show()
     # return
-    g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black', z_scale=z_scale)
+    xlabel = 'Principal Components' if PCA_components else 'DART or ED Assays'
+    g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black', z_scale=z_scale, xlabel=xlabel)
 
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
@@ -443,6 +487,7 @@ def cluster_rows_and_make_heatmap(z_scale=False, group_clusters=True, color_by =
         cluster_colors = base_colors
     bar_colors = [cluster_colors[row_clusters[i]] for i in cluster_order]
     ax_bar.barh(range(len(mean_activity)), mean_activity, color=bar_colors)
+    # ax_bar.barh(range(len(mean_activity)), mean_activity[::-1], color=bar_colors[::-1])
 
     # ─── Collect & sort examples ──────────────────────────────────────────
     examples = sorted(
@@ -568,7 +613,7 @@ def cluster_rows_and_make_heatmap(z_scale=False, group_clusters=True, color_by =
 
     assay_activity_counts = phthalate_df.reset_index().groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     assay_activity = assay_activity_counts.groupby('title')['positive_prediction'].mean().reset_index()
-    assay_activity.sort_values('positive_prediction', ascending=False)
+    assay_activity.sort_values('positive_prediction', ascending=True)
     assay_activity.to_csv(cachedir / 'assay_activity.csv', index=False)
 
     # Create a mapping of cluster number to color
@@ -592,8 +637,11 @@ clustered_phthalate_df = cluster_rows_and_make_heatmap(
     z_scale=True,
     group_clusters=False,
     color_by=None,  # 'isomer', 'cluster', or None
-    PCA_components=50,  # None to skip PCA
-    weighted_mean=False  # use weighted mean based on PCA components
+    # PCA_components=200,  # None to skip PCA
+    PCA_components=None,  # None to skip PCA
+    weighted_mean=False,  # use weighted mean based on PCA components
+    # weighted_mean=True,  # use weighted mean based on PCA components
+    PCA_keep_upto=0.95,  # keep enough components to explain at least 95% of the variance
 )[
     ['uri','title','inchi','mol','positive_prediction','cluster','cluster_color','example']
 ]

@@ -15,6 +15,7 @@ from sklearn.pipeline import Pipeline
 
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import logging
+import re
 
 from rdkit.Chem import (
     AllChem,
@@ -964,3 +965,39 @@ def pca_broken_stick_diagnostic(Xz: pd.DataFrame) -> None:
                  k_keep, p, pairs)
     
     return k_keep
+
+def clean_title(title: str) -> str:
+    """
+    Clean a title string by removing unwanted characters and normalizing spaces.
+    """
+    # Remove unwanted characters and normalize spaces
+    cleaned_title = re.sub(r'[^\w\s]', ' ', title)  # remove punctuation
+    cleaned_title = re.sub(r'\s+', ' ', cleaned_title)  # normalize spaces
+    cleaned_title = cleaned_title.strip()  # remove leading/trailing spaces
+    cleaned_title = cleaned_title.lower()  # Convert to lowercase for consistency
+    return cleaned_title
+
+def get_assay_strength(fullpred: List[Dict], category_label: str ='endocrine disruption', to_clean: bool = False) -> List[Tuple[str, float]]:
+    """
+    Get the strength of the specified category from the fullpred predictions.
+    """
+    assay_strength = []
+
+    if to_clean:
+        # Clean the assay titles for consistency
+        f = lambda title: clean_title(title)
+    else:
+        f = lambda title: title
+
+    for fp in fullpred:
+        prop = fp['property']
+        categories = prop['categories']  # list of dicts
+
+        for category in categories:
+            if category['category'] == category_label:
+                assay_strength.append(
+                    (f(prop['title']), category['strength'])
+                )
+                break
+
+    return assay_strength  # can cast to set or dict if needed
