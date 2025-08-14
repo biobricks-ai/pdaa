@@ -48,6 +48,9 @@ import matplotlib.pyplot as plt
 
 from rdkit import Chem
 
+import pickle
+from wordcloud import WordCloud, STOPWORDS
+
 import sys
 sys.path.append('./')  # so utility scripts can be found
 from scripts.utils.helpers import zscore_columns, pca_broken_stick_diagnostic
@@ -496,6 +499,63 @@ def save_outputs(
 
 # region Word Distributions
 
+def compute_cluster_word_matrix(
+    assays: List[str],
+    cluster_members: Dict[int, List[int]],
+    *,
+    top_n: int = 30,
+    stopwords_path: Path = Path("resources/stopwords.pkl"),
+    per_cluster_top: bool = False,
+) -> Tuple[List[str], pd.DataFrame]:
+    """
+    Return (words_order, matrix) where matrix is a DataFrame with index=cluster_id
+    and columns=words_order, values=relative frequencies per cluster. Mirrors the
+    tokenization/stopwords logic in save_cluster_word_histograms for consistency.
+    """
+    try:
+        with open(stopwords_path, "rb") as f:
+            custom_stop = set(pickle.load(f))
+    except Exception:
+        custom_stop = set()
+    stopwords = set(STOPWORDS) | custom_stop
+
+    wc = WordCloud(stopwords=stopwords, collocations=True, background_color="white")
+    global_counts = wc.process_text(" ".join(assays))
+    if not global_counts:
+        return [], pd.DataFrame()
+
+    global_ranked = [w for w, _ in sorted(global_counts.items(), key=lambda kv: kv[1], reverse=True)]
+    per_cluster_counts: Dict[int, Dict[str, int]] = {}
+    for cid in sorted(cluster_members.keys()):
+        text = " ".join(assays[i] for i in cluster_members[cid])
+        per_cluster_counts[cid] = wc.process_text(text)
+
+    # Build per-cluster relative-frequency vectors using the same word ordering choice
+    cluster_vecs: Dict[int, List[float]] = {}
+    words_by_cluster: Dict[int, List[str]] = {}
+    for cid in sorted(cluster_members.keys()):
+        counts = per_cluster_counts[cid]
+        total = float(sum(counts.values()))
+        if per_cluster_top:
+            ranked = [w for w, c in sorted(counts.items(), key=lambda kv: kv[1], reverse=True) if c > 0][:top_n]
+            if len(ranked) < top_n:
+                backfill = [w for w in global_ranked if w not in ranked][: (top_n - len(ranked))]
+                ranked.extend(backfill)
+            words_order = ranked
+        else:
+            words_order = global_ranked[:top_n]
+
+        vec = [(counts.get(w, 0.0) / total) if total > 0 else 0.0 for w in words_order]
+        cluster_vecs[cid] = vec
+        words_by_cluster[cid] = words_order
+
+    # Choose a single words_order for the matrix columns
+    words_order = global_ranked[:top_n] if not per_cluster_top else words_by_cluster[min(cluster_members.keys())]
+    rows = {cid: cluster_vecs[cid] for cid in sorted(cluster_members.keys())}
+    mat_df = pd.DataFrame.from_dict(rows, orient="index", columns=words_order)
+    mat_df.index.name = "cluster_id"
+    return words_order, mat_df
+
 def save_cluster_word_histograms(
     assays: List[str],
     cluster_members: Dict[int, List[int]],
@@ -529,9 +589,7 @@ def save_cluster_word_histograms(
     stopwords_path : path to pickled Python set/list of stopwords.
     per_cluster_top : choose cluster-specific top-N with global backfill when True.
     """
-    import pickle
     import shutil
-    from wordcloud import WordCloud, STOPWORDS
     from tqdm import tqdm
 
     # Reset/create output directory
@@ -827,17 +885,40 @@ def main():
         mean_scores_df=mean_scores_df   # mean-based cluster scores
     )
 
+    # # Optional: per-cluster word distributions & histograms
+    # if args.cluster_wordcloud or args.per_cluster_top:
+    #     save_cluster_word_histograms(
+    #         assays=assays,
+    #         cluster_members=cluster_members,
+    #         outdir=outdir,
+    #         top_n=30,  # adjust if you prefer a different N
+    #         stopwords_path=Path("resources/stopwords.pkl"),
+    #         per_cluster_top=args.per_cluster_top,
+    #     )
+    #     logging.info("Cluster word histograms written to %s", (Path(outdir) / "cluster_histograms").resolve())
+
     # Optional: per-cluster word distributions & histograms
     if args.cluster_wordcloud or args.per_cluster_top:
+        # Export numeric word matrix for downstream classifiers
+        words_order, mat_df = compute_cluster_word_matrix(
+            assays=assays,
+            cluster_members=cluster_members,
+            top_n=30,
+            stopwords_path=Path("resources/stopwords.pkl"),
+            per_cluster_top=args.per_cluster_top,
+        )
+
         save_cluster_word_histograms(
             assays=assays,
             cluster_members=cluster_members,
             outdir=outdir,
-            top_n=30,  # adjust if you prefer a different N
+            top_n=30,
             stopwords_path=Path("resources/stopwords.pkl"),
             per_cluster_top=args.per_cluster_top,
         )
-        logging.info("Cluster word histograms written to %s", (Path(outdir) / "cluster_histograms").resolve())
+        mat_df.to_csv(outdir / "cluster_histograms" / "cluster_word_matrix.csv", index=True)
+        logging.info("Cluster word histograms and matrix written to %s", (Path(outdir) / "cluster_histograms").resolve())
+
 
     # Plots
     make_plots(

@@ -136,6 +136,12 @@ print(f"Saved top loadings per component to {loadings_fp}")
 # ---------------------------------------------------------------------------
 
 print("Generating component heatmaps ...")
+heatmap_dir = datadir / "component_heatmaps"
+if heatmap_dir.exists():
+    print(f"Removing existing heatmap directory: {heatmap_dir}")
+    for f in heatmap_dir.glob("component_heatmap_*.png"):
+        f.unlink()  # Remove old heatmaps
+heatmap_dir.mkdir(exist_ok=True)
 
 for i, comp in enumerate(components):
     plt.figure(figsize=(12, 1.8))
@@ -145,7 +151,7 @@ for i, comp in enumerate(components):
     plt.xticks(np.arange(len(assay_names)), assay_names, rotation=90, fontsize=6)
     plt.title(f"Dictionary Component {i:02d} Loadings")
     plt.tight_layout()
-    heatmap_fp = datadir / f"component_heatmap_{i:02d}.png"
+    heatmap_fp = heatmap_dir / f"component_heatmap_{i:02d}.png"
     plt.savefig(heatmap_fp, dpi=200)
     plt.close()
 
