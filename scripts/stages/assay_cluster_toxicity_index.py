@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# region Header
 """
 Compute a simple, defensible toxicity index (TI) from an assay activity matrix.
 
@@ -30,8 +31,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import math
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -53,27 +52,8 @@ import sys
 sys.path.append('./')  # so utility scripts can be found
 from scripts.utils.helpers import zscore_columns, pca_broken_stick_diagnostic
 
-# ----------------------------- I/O and preprocessing ----------------------------- #
 
-def load_data(input_path: Path) -> pd.DataFrame:
-    """
-    Load activity matrix with rows=chemicals and columns=assays.
-
-    Returns
-    -------
-    df : DataFrame [n_chemicals x n_assays]
-    """
-    df = pd.read_parquet(input_path)
-    if df.shape[0] < 2 or df.shape[1] < 2:
-        raise ValueError("Input matrix must have at least 2 chemicals and 2 assays.")
-    if not np.issubdtype(df.dtypes.values[0], np.number):
-        # Heuristic check; more thorough checks happen later.
-        logging.warning("Non-numeric dtypes detected; attempting to coerce to numeric.")
-        df = df.apply(pd.to_numeric, errors="coerce")
-    return df
-
-
-# ----------------------------- Clustering ----------------------------- #
+# region Clustering
 
 def assay_distance_matrix(Xz: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
@@ -348,7 +328,7 @@ def compute_cluster_mean_scores(
 
 
 
-# ----------------------------- Toxicity Index ----------------------------- #
+# region Toxicity Index
 
 def compute_ti_from_scores(scores_df: pd.DataFrame, weights: Dict[int, float]) -> pd.DataFrame:
     """
@@ -402,6 +382,26 @@ def compute_ti(scores_df: pd.DataFrame, var_explained: Dict[int, float]) -> pd.D
     }, index=scores_df.index)
     return ti_df
 
+
+# region File I/O
+# ----------------------------- I/O and preprocessing ----------------------------- #
+
+def load_data(input_path: Path) -> pd.DataFrame:
+    """
+    Load activity matrix with rows=chemicals and columns=assays.
+
+    Returns
+    -------
+    df : DataFrame [n_chemicals x n_assays]
+    """
+    df = pd.read_parquet(input_path)
+    if df.shape[0] < 2 or df.shape[1] < 2:
+        raise ValueError("Input matrix must have at least 2 chemicals and 2 assays.")
+    if not np.issubdtype(df.dtypes.values[0], np.number):
+        # Heuristic check; more thorough checks happen later.
+        logging.warning("Non-numeric dtypes detected; attempting to coerce to numeric.")
+        df = df.apply(pd.to_numeric, errors="coerce")
+    return df
 
 # ----------------------------- Example phthalates I/O ----------------------------- #
 
@@ -494,7 +494,142 @@ def save_outputs(
     ti_df.to_parquet(outdir / "toxicity_index.parquet", index=True)
 
 
-# ----------------------------- Plots ----------------------------- #
+# region Word Distributions
+
+def save_cluster_word_histograms(
+    assays: List[str],
+    cluster_members: Dict[int, List[int]],
+    outdir: Path,
+    *,
+    top_n: int = 30,
+    stopwords_path: Path = Path("resources/stopwords.pkl"),
+    per_cluster_top: bool = False,  # if True, use each cluster's own top_n; otherwise use global top_n
+) -> None:
+    """
+    Create normalized word-frequency histograms for each cluster based on assay names.
+
+    Implementation details:
+    - Uses python-wordcloud to tokenize & count.
+    - Loads stopwords from resources/stopwords.pkl and unions with WordCloud default STOPWORDS.
+    - If per_cluster_top is False (default): establish a global ranking of the top-N words across
+      *all* assays and use that fixed order for every histogram.
+    - If per_cluster_top is True: for each cluster, take its own top-N words; if fewer than N have
+      positive frequency, append the highest-ranked global words not already present until length N.
+    - Normalizes to relative frequency (per-cluster) so bars are comparable across clusters.
+    - Saves PNGs to outdir / 'cluster_histograms' as 'cluster{i}_hist.png'.
+    - Ensures consistency across histograms (same size, color, y-limits).
+    - Resets the output directory on each run.
+
+    Parameters
+    ----------
+    assays : list of assay names (length = n_assays), order must align with cluster_members' indices.
+    cluster_members : dict {cluster_id (1-based) -> list of assay indices (0-based)}.
+    outdir : base output directory.
+    top_n : number of words to include on each histogram.
+    stopwords_path : path to pickled Python set/list of stopwords.
+    per_cluster_top : choose cluster-specific top-N with global backfill when True.
+    """
+    import pickle
+    import shutil
+    from wordcloud import WordCloud, STOPWORDS
+    from tqdm import tqdm
+
+    # Reset/create output directory
+    hist_dir = outdir / "cluster_histograms"
+    if hist_dir.exists():
+        shutil.rmtree(hist_dir)
+    hist_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load stopwords (from pickle) and merge with WordCloud defaults
+    try:
+        with open(stopwords_path, "rb") as f:
+            custom_stop = set(pickle.load(f))
+    except Exception:
+        custom_stop = set()
+    stopwords = set(STOPWORDS) | custom_stop
+
+    # Single WordCloud instance for consistent tokenization
+    wc = WordCloud(
+        stopwords=stopwords,
+        collocations=True,  # whether to use collocations (bigrams)
+        background_color="white"
+    )
+
+    # Global top-N words from all assays
+    all_text = " ".join(assays)
+    global_counts = wc.process_text(all_text)  # dict word -> count
+    if not global_counts:
+        logging.warning("No tokens found for word distributions; skipping histogram generation.")
+        return
+    global_ranked = [w for w, _ in sorted(global_counts.items(), key=lambda kv: kv[1], reverse=True)]
+
+    # Precompute per-cluster counts
+    per_cluster_counts: Dict[int, Dict[str, int]] = {}
+    for cid in sorted(cluster_members.keys()):
+        idxs = cluster_members[cid]
+        text = " ".join(assays[i] for i in idxs)
+        per_cluster_counts[cid] = wc.process_text(text)
+
+    # Build the word order per cluster and normalized vectors; track a global y-limit for consistency
+    cluster_word_orders: Dict[int, List[str]] = {}
+    cluster_vecs: Dict[int, List[float]] = {}
+    global_max = 0.0
+
+    for cid in sorted(cluster_members.keys()):
+        counts = per_cluster_counts[cid]
+        total = float(sum(counts.values()))
+
+        if per_cluster_top:
+            # Select cluster's own top words (positive frequency only)
+            cluster_ranked = [w for w, c in sorted(counts.items(), key=lambda kv: kv[1], reverse=True) if c > 0]
+            cluster_ranked = cluster_ranked[:top_n]
+            # Backfill from global list, skipping duplicates, to reach top_n
+            if len(cluster_ranked) < top_n:
+                needed = top_n - len(cluster_ranked)
+                backfill = [w for w in global_ranked if w not in cluster_ranked][:needed]
+                cluster_ranked.extend(backfill)
+            words_order = cluster_ranked
+        else:
+            # Use global fixed order
+            words_order = global_ranked[:top_n]
+
+        # Ensure exactly top_n words (guard against rare cases with <top_n global words)
+        if len(words_order) < top_n:
+            # pad with any remaining tokens seen globally (this should be rare)
+            pad = [w for w in global_ranked if w not in words_order][: (top_n - len(words_order))]
+            words_order = words_order + pad
+
+        # Relative frequencies vector following this cluster's word order
+        vec = [(counts.get(w, 0.0) / total) if total > 0 else 0.0 for w in words_order]
+        cluster_word_orders[cid] = words_order
+        cluster_vecs[cid] = vec
+        if vec:
+            mx = max(vec)
+            if mx > global_max:
+                global_max = mx
+
+    if global_max <= 0.0:
+        global_max = 1.0  # Avoid degenerate axis
+
+    # Plot with consistent aesthetics and axis limits
+    for cid in tqdm(sorted(cluster_members.keys()), desc="Generating histograms"):
+        words_order = cluster_word_orders[cid]
+        vec = cluster_vecs[cid]
+
+        plt.figure(figsize=(14, 6))
+        plt.bar(range(len(words_order)), vec, color="#4C78A8")  # fixed color for visual consistency
+        plt.xticks(range(len(words_order)), words_order, rotation=45, ha="right")
+        plt.ylim(0.0, min(1.0, global_max * 1.05))  # consistent y-limit across clusters
+        plt.ylabel("Relative frequency")
+        # Title clarifies selection mode
+        mode = "cluster top" if per_cluster_top else "global top"
+        plt.title(f"Cluster {cid}: word frequencies (top {len(words_order)} - {mode})")
+        plt.tight_layout()
+        plt.savefig(hist_dir / f"cluster{cid}_hist.png", dpi=300)
+        plt.close()
+
+
+# region Plots
 
 def make_plots(
     outdir: Path,
@@ -562,8 +697,7 @@ def make_plots(
     plt.close()
 
 
-# ----------------------------- Main ----------------------------- #
-
+# region Main 
 def main():
     parser = argparse.ArgumentParser(description="Compute toxicity index via assay clustering and cluster PC1.")
     parser.add_argument("--input", type=str,
@@ -587,6 +721,13 @@ def main():
     parser.add_argument("--use-pc1", action="store_true",
                     help="Use principal component 1 (PC1)-based cluster scores for TI. "
                             "Default is mean standardized activity within each cluster.")
+    parser.add_argument("--cluster-wordcloud", action="store_true",
+                        help="Generate word frequency distributions for each cluster based on assay names.")
+    parser.add_argument("--per-cluster-top", action="store_true",
+                        help="Use per-cluster top-N words for word histograms; otherwise use global top-N.")
+    # Uncomment for debug mode; currently not used in the script
+    # parser.add_argument("--debug", action="store_true",
+    #                     help="Enable debug logging level (default is INFO).")
     args = parser.parse_args()
 
     # Logging config
@@ -685,6 +826,18 @@ def main():
         ti_df=ti_df,                    # TI from selected mode
         mean_scores_df=mean_scores_df   # mean-based cluster scores
     )
+
+    # Optional: per-cluster word distributions & histograms
+    if args.cluster_wordcloud or args.per_cluster_top:
+        save_cluster_word_histograms(
+            assays=assays,
+            cluster_members=cluster_members,
+            outdir=outdir,
+            top_n=30,  # adjust if you prefer a different N
+            stopwords_path=Path("resources/stopwords.pkl"),
+            per_cluster_top=args.per_cluster_top,
+        )
+        logging.info("Cluster word histograms written to %s", (Path(outdir) / "cluster_histograms").resolve())
 
     # Plots
     make_plots(
