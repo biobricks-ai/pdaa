@@ -62,75 +62,119 @@ from scripts.utils.helpers import clean_title
 
 # Default seed lexicons (customize for your domain).
 # Acronyms are expanded in labels for clarity.
+# DEFAULT_CATEGORY_SEEDS = {
+#     "ER (estrogen receptor)": [
+#         "er", "estrogen", "estradiol", "e2", "esr1", "esr2"
+#     ],
+#     "AR (androgen receptor)": [
+#         "ar", "androgen", "dht", "dihydrotestosterone"
+#     ],
+#     "PR (progesterone receptor)": [
+#         "pr", "progesterone", "pgr"
+#     ],
+#     "GR (glucocorticoid receptor)": [
+#         "gr", "glucocorticoid", "nr3c1", "cortisol"
+#     ],
+#     "THR (thyroid hormone receptor)": [
+#         "thr", "thyroid", "tr", "tralpha", "trbeta", "t3", "t4"
+#     ],
+#     "VDR (vitamin D receptor)": [
+#         "vdr", "vitamin d", "calcitriol"
+#     ],
+#     "FXR (farnesoid X receptor)": [
+#         "fxr", "nr1h4"
+#     ],
+#     "RAR (retinoic acid receptor)": [
+#         "rar", "retinoic", "retinoid", "ralpha", "rbeta", "rgamma"
+#     ],
+#     "RXR (retinoid X receptor)": [
+#         "rxr"
+#     ],
+#     "PXR (pregnane X receptor)": [
+#         "pxr", "nr1i2"
+#     ],
+#     "CAR (constitutive androstane receptor)": [
+#         "car", "nr1i3"
+#     ],
+#     "PPARG (peroxisome proliferator-activated receptor gamma)": [
+#         "pparg", "ppar gamma", "pparγ"
+#     ],
+#     "AHR (aryl hydrocarbon receptor)": [
+#         "ahr", "aryl hydrocarbon"
+#     ],
+
+#     # Optional endocrine-relevant targets often seen in assay text
+#     "Aromatase (CYP19A1)": [
+#         "aromatase", "cyp19", "cyp19a1"
+#     ],
+#     "RORA/RORC (retinoic acid receptor-related orphan)": [
+#         "ror", "rora", "rorc"
+#     ],
+#     "PPAR (broad)": [
+#         "ppar", "ppara", "ppard", "pparg"
+#     ],
+#     "HDAC (histone deacetylase)": [
+#         "histone deacetylase", "hdac"
+#     ],
+#     "Somatostatin": [
+#         "somatostatin"
+#     ],
+#     "Melanocortin": [
+#         "melanocortin"
+#     ],
+#     "Adrenergic": [
+#         "adrenergic", "adrenoceptor"
+#     ],
+#     "Angiotensin/TGF": [
+#         "angiotensin", "tgf"
+#     ],
+#     "Prostaglandin": [
+#         "prostaglandin"
+#     ],
+# }
 DEFAULT_CATEGORY_SEEDS = {
-    "ER (estrogen receptor)": [
-        "er", "estrogen", "estradiol", "e2", "esr1", "esr2"
+    # Steroid hormone receptors
+    "ER (estrogen receptor)": ["er", "estrogen", "estradiol", "e2", "esr1", "esr2"],
+    "AR (androgen receptor)": ["ar", "androgen", "dht", "dihydrotestosterone"],
+    "PR (progesterone receptor)": ["pr", "progesterone", "pgr"],
+    "GR (glucocorticoid receptor)": ["gr", "glucocorticoid", "nr3c1", "cortisol"],
+    "MR (mineralocorticoid receptor)": ["mr", "nr3c2", "aldosterone"],
+
+    # Thyroid axis (receptor + key mechanisms)
+    "TR (thyroid hormone receptor)": ["tr", "tralpha", "trbeta", "thyroid hormone receptor", "t3", "t4"],
+    "Thyroid synthesis/metabolism (TPO/NIS/DIO)": [
+        "tpo", "thyroid peroxidase", "nis", "sodium iodide symporter", "slc5a5",
+        "deiodinase", "dio1", "dio2", "dio3"
     ],
-    "AR (androgen receptor)": [
-        "ar", "androgen", "dht", "dihydrotestosterone"
-    ],
-    "PR (progesterone receptor)": [
-        "pr", "progesterone", "pgr"
-    ],
-    "GR (glucocorticoid receptor)": [
-        "gr", "glucocorticoid", "nr3c1", "cortisol"
-    ],
-    "THR (thyroid hormone receptor)": [
-        "thr", "thyroid", "tr", "tralpha", "trbeta", "t3", "t4"
-    ],
-    "VDR (vitamin D receptor)": [
-        "vdr", "vitamin d", "calcitriol"
-    ],
-    "FXR (farnesoid X receptor)": [
-        "fxr", "nr1h4"
-    ],
-    "RAR (retinoic acid receptor)": [
-        "rar", "retinoic", "retinoid", "ralpha", "rbeta", "rgamma"
-    ],
-    "RXR (retinoid X receptor)": [
-        "rxr"
-    ],
-    "PXR (pregnane X receptor)": [
-        "pxr", "nr1i2"
-    ],
-    "CAR (constitutive androstane receptor)": [
-        "car", "nr1i3"
-    ],
-    "PPARG (peroxisome proliferator-activated receptor gamma)": [
-        "pparg", "ppar gamma", "pparγ"
-    ],
-    "AHR (aryl hydrocarbon receptor)": [
-        "ahr", "aryl hydrocarbon"
+    "Thyroid transport (TTR/TBG)": [
+        "transthyretin", "ttr", "thyroxine binding globulin", "tbg", "thyroxine transport"
     ],
 
-    # Optional endocrine-relevant targets often seen in assay text
-    "Aromatase (CYP19A1)": [
-        "aromatase", "cyp19", "cyp19a1"
+    # Steroid biosynthesis
+    "Steroidogenesis (H295R/enzyme panel)": [
+        "steroidogenesis", "h295r", "star", "cyp11a1", "cyp17a1", "cyp21a2",
+        "hsd3b1", "hsd3b2", "hsd17b1", "srd5a1", "srd5a2",
+        "progesterone", "testosterone", "androstenedione", "11-deoxycortisol"
     ],
-    "RORA/RORC (retinoic acid receptor-related orphan)": [
-        "ror", "rora", "rorc"
-    ],
-    "PPAR (broad)": [
-        "ppar", "ppara", "ppard", "pparg"
-    ],
-    "HDAC (histone deacetylase)": [
-        "histone deacetylase", "hdac"
-    ],
-    "Somatostatin": [
-        "somatostatin"
-    ],
-    "Melanocortin": [
-        "melanocortin"
-    ],
-    "Adrenergic": [
-        "adrenergic", "adrenoceptor"
-    ],
-    "Angiotensin/TGF": [
-        "angiotensin", "tgf"
-    ],
-    "Prostaglandin": [
-        "prostaglandin"
-    ],
+    "Aromatase (CYP19A1)": ["aromatase", "cyp19", "cyp19a1"],
+
+    # Metabolic nuclear receptors
+    "PPARα": ["ppara", "ppar alpha"],
+    "PPARδ": ["ppard", "ppar delta"],
+    "PPARγ": ["pparg", "ppar gamma", "ppargamma"],
+
+    # Retinoid / vitamin D
+    "RAR (retinoic acid receptor)": ["rar", "retinoic", "retinoid", "rara", "rarb", "rarg"],
+    "RXR (retinoid X receptor)": ["rxr", "rxra", "rxrb", "rxrg"],
+    "VDR (vitamin D receptor)": ["vdr", "vitamin d", "calcitriol"],
+
+    # Xenobiotic / cross-talk NRs
+    "AhR (aryl hydrocarbon receptor)": ["ahr", "aryl hydrocarbon"],
+    "PXR (pregnane X receptor)": ["pxr", "nr1i2", "pregnane x receptor"],
+    "CAR (constitutive androstane receptor)": ["car", "nr1i3"],
+    # Optional (enable only if screened)
+    # "FXR (farnesoid X receptor)": ["fxr", "nr1h4", "bile acid receptor"],
+    # "ROR (retinoic acid receptor-related orphan)": ["ror", "rora", "rorc"],
 }
 
 
