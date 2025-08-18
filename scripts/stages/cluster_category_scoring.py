@@ -539,12 +539,14 @@ def build_vocab_from_corpus(texts: Sequence[str],
 #             if w in index:
 #                 counts[index[w]] += float(c)
 #     return build_background_from_counts(counts)
-def background_from_corpus(texts: Sequence[str],
-                           vocab: List[str],
-                           stopwords: set,
-                           *,
-                           collocations: bool,
-                           collocation_threshold: int) -> np.ndarray:
+def background_from_corpus(
+        texts: Sequence[str],
+        vocab: List[str],
+        stopwords: set,
+        *,
+        collocations: bool,
+        collocation_threshold: int
+) -> np.ndarray:
     wc = _make_wc(stopwords, collocations=collocations, collocation_threshold=collocation_threshold)
     index = {w: i for i, w in enumerate(vocab)}
     counts = np.zeros(len(vocab), dtype=float)
