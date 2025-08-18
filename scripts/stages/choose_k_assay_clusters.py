@@ -69,12 +69,11 @@ from scipy.spatial.distance import squareform
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.preprocessing import normalize
 
+from tqdm import tqdm
+
 # Optional imports from your repo
 sys.path.append("./")
-try:
-    from scripts.utils.helpers import zscore_columns  # preferred
-except Exception:
-    zscore_columns = None  # fallback defined below
+from scripts.utils.helpers import zscore_columns
 
 # Try to import the clustering helpers to reuse WordCloud behavior for p_c(w)
 def _import_cluster_module(path_hint: Optional[str] = None):
@@ -263,7 +262,7 @@ def main():
     bp.add_argument("--bp-script", default="scripts/stages/cluster_category_scoring.py",
                     help="Path to cluster_category_scoring.py.")
     bp.add_argument("--bp-corpus", default=None, help="--corpus for build-posteriors.")
-    bp.add_argument("--bp-text-col", default="text", help="--text-col for build-posteriors.")
+    bp.add_argument("--bp-text-col", default="title", help="--text-col for build-posteriors.")
     bp.add_argument("--bp-vocab", default=None, help="--vocab for build-posteriors.")
     bp.add_argument("--bp-vocab-size", type=int, default=5000, help="--vocab-size for build-posteriors.")
     bp.add_argument("--bp-bg-mode", choices=["uniform", "corpus"], default="corpus", help="--bg-mode.")
@@ -326,10 +325,7 @@ def main():
 
     # Load and z-score the activity matrix
     df = pd.read_parquet(args.matrix)
-    if zscore_columns is not None:
-        Xz, dropped = zscore_columns(df)
-    else:
-        Xz, dropped = _zscore_columns(df)
+    Xz, dropped = zscore_columns(df)
     if dropped:
         logging.info("Dropped %d zero-variance assays.", len(dropped))
     assays = list(Xz.columns)
@@ -356,7 +352,7 @@ def main():
     chosen = None
 
     # Precompute full assay distance matrix once per bootstrap
-    for K in K_list:
+    for K in tqdm(K_list):
         Pkc_runs: List[np.ndarray] = []
         label_runs: List[np.ndarray] = []
         metrics_runs: List[RunMetrics] = []
