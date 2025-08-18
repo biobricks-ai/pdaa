@@ -499,6 +499,63 @@ def save_outputs(
 
 # region Word Distributions
 
+# def compute_cluster_word_matrix(
+#     assays: List[str],
+#     cluster_members: Dict[int, List[int]],
+#     *,
+#     top_n: int = 30,
+#     stopwords_path: Path = Path("resources/stopwords.pkl"),
+#     per_cluster_top: bool = False,
+# ) -> Tuple[List[str], pd.DataFrame]:
+#     """
+#     Return (words_order, matrix) where matrix is a DataFrame with index=cluster_id
+#     and columns=words_order, values=relative frequencies per cluster. Mirrors the
+#     tokenization/stopwords logic in save_cluster_word_histograms for consistency.
+#     """
+#     try:
+#         with open(stopwords_path, "rb") as f:
+#             custom_stop = set(pickle.load(f))
+#     except Exception:
+#         custom_stop = set()
+#     stopwords = set(STOPWORDS) | custom_stop
+
+#     wc = WordCloud(stopwords=stopwords, collocations=True, background_color="white")
+#     global_counts = wc.process_text(" ".join(assays))
+#     if not global_counts:
+#         return [], pd.DataFrame()
+
+#     global_ranked = [w for w, _ in sorted(global_counts.items(), key=lambda kv: kv[1], reverse=True)]
+#     per_cluster_counts: Dict[int, Dict[str, int]] = {}
+#     for cid in sorted(cluster_members.keys()):
+#         text = " ".join(assays[i] for i in cluster_members[cid])
+#         per_cluster_counts[cid] = wc.process_text(text)
+
+#     # Build per-cluster relative-frequency vectors using the same word ordering choice
+#     cluster_vecs: Dict[int, List[float]] = {}
+#     words_by_cluster: Dict[int, List[str]] = {}
+#     for cid in sorted(cluster_members.keys()):
+#         counts = per_cluster_counts[cid]
+#         total = float(sum(counts.values()))
+#         if per_cluster_top:
+#             ranked = [w for w, c in sorted(counts.items(), key=lambda kv: kv[1], reverse=True) if c > 0][:top_n]
+#             if len(ranked) < top_n:
+#                 backfill = [w for w in global_ranked if w not in ranked][: (top_n - len(ranked))]
+#                 ranked.extend(backfill)
+#             words_order = ranked
+#         else:
+#             words_order = global_ranked[:top_n]
+
+#         vec = get_vector_for_cluster(counts, total, words_order)
+#         cluster_vecs[cid] = vec
+#         words_by_cluster[cid] = words_order
+
+#     # Choose a single words_order for the matrix columns
+#     words_order = global_ranked[:top_n] if not per_cluster_top else words_by_cluster[min(cluster_members.keys())]
+#     rows = {cid: cluster_vecs[cid] for cid in sorted(cluster_members.keys())}
+#     mat_df = pd.DataFrame.from_dict(rows, orient="index", columns=words_order)
+#     mat_df.index.name = "cluster_id"
+#     return words_order, mat_df
+
 def compute_cluster_word_matrix(
     assays: List[str],
     cluster_members: Dict[int, List[int]],
@@ -506,11 +563,12 @@ def compute_cluster_word_matrix(
     top_n: int = 30,
     stopwords_path: Path = Path("resources/stopwords.pkl"),
     per_cluster_top: bool = False,
+    use_tfidf: bool = False,  # NEW: toggle TF-IDF weighting
 ) -> Tuple[List[str], pd.DataFrame]:
     """
     Return (words_order, matrix) where matrix is a DataFrame with index=cluster_id
-    and columns=words_order, values=relative frequencies per cluster. Mirrors the
-    tokenization/stopwords logic in save_cluster_word_histograms for consistency.
+    and columns=words_order, values=relative frequencies per cluster (TF) or
+    TF-IDF-reweighted and renormalized when use_tfidf=True.
     """
     try:
         with open(stopwords_path, "rb") as f:
@@ -525,12 +583,25 @@ def compute_cluster_word_matrix(
         return [], pd.DataFrame()
 
     global_ranked = [w for w, _ in sorted(global_counts.items(), key=lambda kv: kv[1], reverse=True)]
+
+    # NEW: build per-assay document frequencies for IDF using the same tokenizer
+    idf: Dict[str, float] = {}
+    if use_tfidf:
+        N_docs = len(assays)
+        df_counts: Dict[str, int] = {}
+        for a in assays:
+            # unique tokens present in this assay "document"
+            for w in wc.process_text(a).keys():
+                df_counts[w] = df_counts.get(w, 0) + 1
+        # smooth and compute IDF = log((N+1)/(df+1)) + 1
+        idf = {w: float(np.log((N_docs + 1.0) / (df_counts.get(w, 0) + 1.0)) + 1.0) for w in df_counts.keys()}
+
     per_cluster_counts: Dict[int, Dict[str, int]] = {}
     for cid in sorted(cluster_members.keys()):
         text = " ".join(assays[i] for i in cluster_members[cid])
         per_cluster_counts[cid] = wc.process_text(text)
 
-    # Build per-cluster relative-frequency vectors using the same word ordering choice
+    # Build per-cluster vectors using the chosen word ordering
     cluster_vecs: Dict[int, List[float]] = {}
     words_by_cluster: Dict[int, List[str]] = {}
     for cid in sorted(cluster_members.keys()):
@@ -545,7 +616,8 @@ def compute_cluster_word_matrix(
         else:
             words_order = global_ranked[:top_n]
 
-        vec = [(counts.get(w, 0.0) / total) if total > 0 else 0.0 for w in words_order]
+        # NEW: pass IDF mapping when TF-IDF is enabled
+        vec = get_vector_for_cluster(counts, total, words_order, idf if use_tfidf else None)
         cluster_vecs[cid] = vec
         words_by_cluster[cid] = words_order
 
@@ -555,6 +627,42 @@ def compute_cluster_word_matrix(
     mat_df = pd.DataFrame.from_dict(rows, orient="index", columns=words_order)
     mat_df.index.name = "cluster_id"
     return words_order, mat_df
+
+
+# def get_vector_for_cluster(counts: Dict[str, int], total: float, words_order: List[str]) -> List[float]:
+#     """
+#     Return a relative frequency vector for a cluster based on word counts.
+#     """
+#     vec = [(counts.get(w, 0.0) / total) if total > 0 else 0.0 for w in words_order]
+#     return vec
+
+def get_vector_for_cluster(
+    counts: Dict[str, int],
+    total: float,
+    words_order: List[str],
+    idf: Optional[Dict[str, float]] = None
+) -> List[float]:
+    """
+    Build a cluster-level word vector. If idf is provided, compute TF-IDF
+    (TF = count/total within cluster text; IDF per assay-title corpus),
+    then renormalize so the vector sums to 1 for downstream metrics.
+    """
+    if total <= 0:
+        return [0.0] * len(words_order)
+
+    # raw TF
+    tf = np.array([counts.get(w, 0.0) for w in words_order], dtype=float)
+    tf = tf / max(tf.sum(), 1.0)  # guard; equivalent to dividing by total tokens
+
+    if idf is None:
+        return tf.tolist()
+
+    # TF-IDF with smoothing defaults (idf.get(..., 1.0)); then renormalize
+    weights = np.array([idf.get(w, 1.0) for w in words_order], dtype=float)
+    tfidf = tf * weights
+    s = tfidf.sum()
+    return (tfidf / s).tolist() if s > 0 else [0.0] * len(words_order)
+
 
 def save_cluster_word_histograms(
     assays: List[str],
@@ -658,7 +766,7 @@ def save_cluster_word_histograms(
             words_order = words_order + pad
 
         # Relative frequencies vector following this cluster's word order
-        vec = [(counts.get(w, 0.0) / total) if total > 0 else 0.0 for w in words_order]
+        vec = get_vector_for_cluster(counts, total, words_order)
         cluster_word_orders[cid] = words_order
         cluster_vecs[cid] = vec
         if vec:
@@ -906,6 +1014,7 @@ def main():
             top_n=30,
             stopwords_path=Path("resources/stopwords.pkl"),
             per_cluster_top=args.per_cluster_top,
+            use_tfidf=True,  # enable TF-IDF weighting
         )
 
         save_cluster_word_histograms(
