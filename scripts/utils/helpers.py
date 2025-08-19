@@ -1107,7 +1107,7 @@ def clean_title(title: str) -> str:
 
 #     return assay_strength  # can cast to set or dict if needed
 
-def get_assay_strength(fullpred: List[Dict], category_label: str = 'endocrine disruption', to_clean: bool = False) -> List[Tuple[int, str, float]]:
+def get_assay_strength(fullpred: List[Dict], category_labels: List[str] = ['endocrine disruption'], to_clean: bool = False) -> List[Tuple[int, str, float]]:
     """
     Return (property_token, normalized_title, strength) for the requested category (ED).
     Falls back to parsing the token from an identifier if needed.
@@ -1133,7 +1133,7 @@ def get_assay_strength(fullpred: List[Dict], category_label: str = 'endocrine di
             continue  # cannot key this record without a token
 
         for c in categories:
-            if c.get('category') == category_label:
+            if c.get('category') in category_labels:
                 assay_strength.append((int(token), f(prop.get('title', '')), float(c.get('strength', 0.0))))
                 break
 

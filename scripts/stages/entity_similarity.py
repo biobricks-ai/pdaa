@@ -18,7 +18,7 @@ import sys
 sys.path.append('./')
 import stages.utils.pdaa as pdaa
 import stages.utils.sparql as sparql
-from scripts.utils.helpers import clean_title
+from scripts.utils.helpers import clean_title, get_descriptors
 
 resourcedir = pathlib.Path('resources')
 
@@ -96,7 +96,6 @@ def _styled_heatmap(
     show_dendrogram = True
     g.ax_col_dendrogram.set_visible(show_dendrogram)
 
-    # g.ax_heatmap.set_xlabel('DART or ED Assays', color=fontcolor, fontsize=20)
     g.ax_heatmap.set_xlabel(xlabel, color=fontcolor, fontsize=20)
 
     # Label the colorbar
@@ -379,7 +378,7 @@ def get_assays_from_df():
     print(f"Loaded {len(ice_assays)} assays from assay_strength.csv")
     return ice_assays
 
-def build_phthalate_ice_activity_df(mask_method='prediction'):
+def build_phthalate_ice_activity_df(mask_method='prediction', use_cache=True):
     print("Building phthalate ICE activity dataframe...")
     
     if mask_method == 'categories':
@@ -389,11 +388,17 @@ def build_phthalate_ice_activity_df(mask_method='prediction'):
 
     ice_assays.to_csv(resourcedir / 'ice_assays.csv', index=False)
 
-    print("Fetching predictions from SQLite...")
-    with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
-        tokens = ','.join(map(str, ice_assays['token'].tolist()))
-        query = f'SELECT * FROM predictions WHERE property_token IN ({tokens})'
-        ice_preds = pd.read_sql(query, conn)
+    ice_preds_parquet = cachedir / 'ice_preds.parquet'
+    if use_cache and ice_preds_parquet.exists():
+        print(f"Loading cached predictions from {ice_preds_parquet}...")
+        ice_preds = pd.read_parquet(ice_preds_parquet)
+    else:
+        print("Fetching predictions from SQLite...")
+        with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
+            tokens = ','.join(map(str, ice_assays['token'].tolist()))
+            query = f'SELECT * FROM predictions WHERE property_token IN ({tokens})'
+            ice_preds = pd.read_sql(query, conn)
+        ice_preds.to_parquet(ice_preds_parquet)
 
     try:
         assert all(inchi in ice_preds['inchi'].tolist() for inchi in example_inchi)
@@ -408,9 +413,16 @@ def build_phthalate_ice_activity_df(mask_method='prediction'):
     df = ice_preds.sort_values('positive_prediction', ascending=True)[['inchi', 'property_token', 'positive_prediction']]
     df = df.groupby(['inchi','property_token'])['positive_prediction'].mean().reset_index()
 
-    inchi_mol_df = df[['inchi']].drop_duplicates()
-    print("Converting InChIs to molecules...")
-    inchi_mol_df['mol'] = inchi_mol_df['inchi'].progress_apply(lambda x: Chem.MolFromInchi(x))
+    inchi_mol_pkl = cachedir / 'inchi_mol.pkl'
+    if use_cache and inchi_mol_pkl.exists():
+        print(f"Loading cached InChI to molecule mapping from {inchi_mol_pkl}...")
+        inchi_mol_df = pd.read_pickle(inchi_mol_pkl)
+    else:
+        inchi_mol_df = df[['inchi']].drop_duplicates()
+        print("Converting InChIs to molecules...")
+        inchi_mol_df['mol'] = inchi_mol_df['inchi'].progress_apply(lambda x: Chem.MolFromInchi(x))
+        inchi_mol_df.to_pickle(inchi_mol_pkl)
+
     df2 = df.merge(inchi_mol_df, on='inchi')
 
     try:
@@ -429,8 +441,9 @@ def build_phthalate_ice_activity_df(mask_method='prediction'):
     print(f"Final dataset contains {len(df3)} rows")
     return df3
 
+mask_method = 'categories'  # 'list', 'prediction', or 'categories'
 phthalate_df = build_phthalate_ice_activity_df(
-    mask_method='categories',
+    mask_method=mask_method,
 )[['uri','title','inchi','mol','positive_prediction']]
 
 # endregion
@@ -446,6 +459,7 @@ def cluster_rows_and_make_heatmap(
     PCA_keep_upto=1.0,
     active_top=True,
     plot_PCA_variance=False,
+    mask_method:str = 'prediction',
 ):
     activity_matrix = phthalate_df.groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     activity_matrix = activity_matrix.pivot(index='inchi', columns='title', values='positive_prediction')
@@ -504,6 +518,9 @@ def cluster_rows_and_make_heatmap(
         kmeans = KMeans(n_clusters=n_clusters, random_state=42)
         row_clusters = kmeans.fit_predict(activity_matrix_filled)
 
+    # Force NumPy array to avoid pandas Series positional-indexing deprecation.
+    row_clusters = np.asarray(row_clusters, dtype=int)
+
     # Still use hierarchical clustering for column ordering
     col_linkage = hierarchy.linkage(activity_matrix_filled.T, method='average')
     col_order = hierarchy.leaves_list(col_linkage)
@@ -535,6 +552,9 @@ def cluster_rows_and_make_heatmap(
     else:
         # Sort by mean activity only
         cluster_order = np.argsort(mean_activities)
+
+    # Normalize to plain ndarray so positional indexing is unambiguous.
+    cluster_order = np.asarray(cluster_order, dtype=int)
 
     if active_top:
         # Reverse the order so that higher activity is at the top
@@ -610,7 +630,16 @@ def cluster_rows_and_make_heatmap(
         # Use the cluster colors instead
         row_colors = [base_colors[row_clusters[i]] for i in cluster_order]
 
-    xlabel = 'Principal Components' if PCA_components else 'DART or ED Assays'
+    if PCA_components:
+        # Use the PCA components as the x-axis label
+        xlabel = 'Principal Components'
+    elif mask_method == 'categories':
+        # Use the assay categories as the x-axis label
+        xlabel = 'DART or ED Assays'
+    else:
+        # Generic label for DART or ED assays
+        xlabel = 'DART or ED Assays'
+
     g = _styled_heatmap(reordered_matrix, row_colors, fontcolor='black', z_scale=z_scale, xlabel=xlabel)
 
     from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -647,7 +676,7 @@ def cluster_rows_and_make_heatmap(
     min_sep = 33.0                      # desired gap in row units
     shifts  = np.zeros_like(base_rows) # incremental y-offsets
     max_iter = 300
-    for _ in range(max_iter):
+    for iter in range(max_iter):
         moved = False
         # walk down sorted list and push pairs that overlap
         for j in range(1, len(base_rows)):
@@ -660,6 +689,7 @@ def cluster_rows_and_make_heatmap(
                 shifts[j]   += delta   # push down
                 moved = True
         if not moved:
+            print(f"Resolved all overlaps in {iter+1} iterations")
             break   # no overlaps; done
     else:
         warnings.warn("label-spreading hit max_iter without fully resolving overlaps")
@@ -688,7 +718,8 @@ def cluster_rows_and_make_heatmap(
 
     # ─── Tidy up axis ────────────────────────────────────────────────────
     ax_bar.set_ylim(g.ax_heatmap.get_ylim())
-    ax_bar.set_xlabel('Mean Activity', fontsize=20)
+    # ax_bar.set_xlabel('Mean Activity', fontsize=20)
+    ax_bar.set_xlabel('MAV', fontsize=20)
     ax_bar.set_yticks([])
 
     # ─── Cluster legend ─────────────────────────────────────────────────
@@ -762,7 +793,9 @@ def cluster_rows_and_make_heatmap(
     # Add both cluster number and color to the dataframe
     inchi_clusters = []
     for inchi in reordered_matrix.index:
-        cluster = row_clusters[cluster_order[reordered_indices[inchi]]]
+        # cluster = row_clusters[cluster_order[reordered_indices[inchi]]]
+        pos = int(cluster_order[reordered_indices[inchi]])
+        cluster = int(row_clusters[pos])
         inchi_clusters.append((inchi, cluster, cluster_color_map[cluster]))
 
     inchi_cluster_df = pd.DataFrame(inchi_clusters, columns=['inchi', 'cluster', 'cluster_color'])
@@ -773,20 +806,20 @@ def cluster_rows_and_make_heatmap(
     clustered_phthalate_df['example'] = clustered_phthalate_df['inchi'].progress_apply(lambda x: example_inchi2name.get(x, 'None'))
     return clustered_phthalate_df
 
+color_by = None  # 'isomer', 'cluster', or None
 clustered_phthalate_df = cluster_rows_and_make_heatmap(
     z_scale=True,
     group_clusters=False,
-    color_by=None,  # 'isomer', 'cluster', or None
+    color_by=color_by,
     # PCA_components=200,  # None to skip PCA
     PCA_components=None,  # None to skip PCA
     weighted_mean=False,  # use weighted mean based on PCA components
     # weighted_mean=True,  # use weighted mean based on PCA components
     PCA_keep_upto=0.95,  # keep enough components to explain at least 95% of the variance
+    mask_method=mask_method,
 )[
     ['uri','title','inchi','mol','positive_prediction','cluster','cluster_color','example']
 ]
-
-sys.exit(0)  # stop here while iterating
 
 # save dataframes
 phthalate_df.to_csv(cachedir / 'phthalate_df.csv', index=False)
@@ -794,23 +827,47 @@ clustered_phthalate_df.to_csv(cachedir / 'clustered_phthalate_df.csv', index=Fal
 # endregion
 
 # region CHARACTERIZE PRIORITY PHTHALATES ===============================================================
-def plot_phthalate_activity_relationships():
+def plot_phthalate_activity_relationships(color_by='cluster'):
     df4 = clustered_phthalate_df.groupby(['inchi'])['positive_prediction'].mean().reset_index()
     df5 = clustered_phthalate_df[['inchi', 'mol', 'cluster','cluster_color', 'example']].drop_duplicates()
     df6 = df4.merge(df5, on='inchi')
     df6 = df6[['inchi', 'mol', 'positive_prediction', 'example', 'cluster', 'cluster_color']]
 
-    df6['mw'] = df6['mol'].progress_apply(lambda m: rdkit.Chem.rdMolDescriptors.CalcExactMolWt(m))
-    df6['logp'] = df6['mol'].progress_apply(lambda m: Chem.Crippen.MolLogP(m))
-    df6['num_rotatable_bonds'] = df6['mol'].progress_apply(lambda m: rdkit.Chem.rdMolDescriptors.CalcNumRotatableBonds(m))
-    df6['branching_ratio'] = df6['mol'].progress_apply(lambda m: rdkit.Chem.rdMolDescriptors.CalcFractionCSP3(m))
+    # Extract feature dicts for each molecule
+    feats_list = []
+    unique_inchis = df6['inchi'].unique()
+    for inchi in unique_inchis:
+        mol = df6.loc[df6['inchi'] == inchi, 'mol'].values[0]
+        mol_H = Chem.AddHs(mol)  # Add hydrogens to the molecule
+        feats = get_descriptors(mol_H)
+        # limit the keys to the ones we want to use
+        feats = {k: v for k, v in feats.items() if k in [
+            'MolWt', 'cLogP', 'RotB', 'BranchingRatio'
+        ]}
+        feats_list.append(feats)
+
+    # Create a DataFrame from the list of dicts
+    features_df = pd.DataFrame(feats_list, index=unique_inchis)
+
+    # Step 3: Concatenate features to df6
+    # df6 = pd.concat([df6, features_df], axis=1)
+
+    # Merge features_df with df6 on 'inchi'
+    df6 = df6.merge(features_df, left_on='inchi', right_index=True, how='left')
+
+    # df6['mw'] = df6['mol'].progress_apply(lambda m: rdkit.Chem.rdMolDescriptors.CalcExactMolWt(m))
+    # df6['logp'] = df6['mol'].progress_apply(lambda m: Chem.Crippen.MolLogP(m))
+    # df6['num_rotatable_bonds'] = df6['mol'].progress_apply(lambda m: rdkit.Chem.rdMolDescriptors.CalcNumRotatableBonds(m))
+    # df6['branching_ratio'] = df6['mol'].progress_apply(lambda m: rdkit.Chem.rdMolDescriptors.CalcFractionCSP3(m))
 
     # create a logistic regression model to predict activity from the metrics
     from sklearn.linear_model import LinearRegression
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import r2_score
+    from adjustText import adjust_text  # auto-spread labels to avoid overlap
 
-    X = df6[['mw', 'logp', 'num_rotatable_bonds', 'branching_ratio']]
+    # X = df6[['mw', 'logp', 'num_rotatable_bonds', 'branching_ratio']]
+    X = df6[['MolWt', 'cLogP', 'RotB', 'BranchingRatio']]
     y = df6['positive_prediction']
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
@@ -822,18 +879,22 @@ def plot_phthalate_activity_relationships():
     print(f"R^2 between predicted and true activity: {r2:.3f}")
     # Print feature names and their corresponding weights
     print("\nModel coefficients:")
-    for feature, weight in zip(['Molecular Weight', 'LogP', 'Number of Rotatable Bonds', 'Branching Ratio'], model.coef_):
+    for feature, weight in zip(['Molecular Weight', 'cLogP', 'Number of Rotatable Bonds', 'Branching Ratio'], model.coef_):
         print(f"{feature:25} {weight:>8.3f}")
     print(f"{'Intercept':25} {model.intercept_:>8.3f}")
     
-    df6['activity_pred'] = model.predict(df6[['mw', 'logp', 'num_rotatable_bonds', 'branching_ratio']])
+    df6['activity_pred'] = model.predict(X)
 
     correlations = {}
     metrics = {
-        'logp': ('LogP', 'LogP'),
-        'num_rotatable_bonds' : ('Number of Rotatable Bonds', 'Number of Rotatable Bonds'),
-        'mw' : ('Molecular Weight', 'Molecular Weight (Da)'),
-        'branching_ratio' : ('Branching Ratio', 'Branching Ratio'),
+        # 'logp': ('cLogP', 'cLogP'),
+        # 'num_rotatable_bonds' : ('Number of Rotatable Bonds', 'Number of Rotatable Bonds'),
+        # 'mw' : ('Molecular Weight', 'Molecular Weight (Da)'),
+        # 'branching_ratio' : ('Branching Ratio', 'Branching Ratio'),
+        'MolWt' : ('Molecular Weight', 'Molecular Weight (Da)'),
+        'cLogP': ('cLogP', 'cLogP'),
+        'RotB' : ('Number of Rotatable Bonds', 'Number of Rotatable Bonds'),
+        'BranchingRatio' : ('Branching Ratio', 'Branching Ratio'),
         'activity_pred' : ('Predicted Activity', 'Predicted Activity'),
     }
 
@@ -861,8 +922,12 @@ def plot_phthalate_activity_relationships():
         fig, ax = plt.subplots(figsize=(24, 6), dpi=600)  # Same width but height/4
 
         # Create scatter plot colored by cluster
-        sns.scatterplot(x=metric, y='positive_prediction', data=plotdf[plotdf['example'] == 'None'],
-                    hue='cluster', palette=cluster_colors, alpha=0.7, ax=ax, s=150)  # Increased point size
+        sns.scatterplot(
+            x=metric, y='positive_prediction', data=plotdf[plotdf['example'] == 'None'],
+            hue='cluster' if color_by == 'cluster' else None,
+            palette=cluster_colors, alpha=0.7, ax=ax, s=150,
+            
+        )
         
         # Plot example phthalates
         example_df = plotdf[plotdf['example'] != 'None']
@@ -870,28 +935,104 @@ def plot_phthalate_activity_relationships():
                     color=example_df['cluster_color'], alpha=1.0, ax=ax,
                     marker='s', s=300, legend=False)  # Increased marker size
         
-        # Add text annotations for example phthalates
-        for _, row in plotdf[plotdf['example'] != 'None'].iterrows():
-            ax.annotate(row['example'], 
-                    xy=(row[metric], row['positive_prediction']),
-                    xytext=(10, 10), textcoords='offset points',
-                    fontsize=16, alpha=0.8,  # Increased font size
-                    bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+        # # Add text annotations for example phthalates
+        # for _, row in plotdf[plotdf['example'] != 'None'].iterrows():
+        #     ax.annotate(row['example'], 
+        #             xy=(row[metric], row['positive_prediction']),
+        #             xytext=(10, 10), textcoords='offset points',
+        #             fontsize=16, alpha=0.8,  # Increased font size
+        #             bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+                # Add text annotations for example phthalates with collision avoidance
+        texts = []
+        ex = plotdf[plotdf['example'] != 'None']
+        for _, row in ex.iterrows():
+            # start each label at the point; adjust_text will move it
+            t = ax.text(
+                row[metric],
+                row['positive_prediction'],
+                row['example'],
+                fontsize=16,
+                alpha=0.9,
+                bbox=dict(facecolor='white', edgecolor='none', alpha=0.7)
+            )
+            texts.append(t)
+
+        # Repel labels from each other and from background points; draw subtle leader lines
+        bg = plotdf[plotdf['example'] == 'None']
+        # adjust_text(
+        #     texts,
+        #     x=bg[metric].to_numpy(),
+        #     y=bg['positive_prediction'].to_numpy(),
+        #     ax=ax,
+        #     expand=(1.15, 1.30),          # grow text-text padding
+        #     expand_points=(1.15, 1.30),   # grow text-point padding
+        #     force_text=0.25,              # repulsion strength between texts
+        #     force_points=0.25,            # repulsion strength from points
+        #     only_move={'points': 'y', 'texts': 'xy'},
+        #     arrowprops=dict(arrowstyle='-', lw=0.8, alpha=0.8)
+        # )
+        # adjust_text(
+        #     texts,
+        #     x=bg[metric].to_numpy(),
+        #     y=bg['positive_prediction'].to_numpy(),
+        #     ax=ax,
+        #     # give the solver more space and push a bit harder
+        #     lim=400,                              # more iterations
+        #     expand=(1.20, 1.35),
+        #     expand_points=(1.25, 1.45),
+        #     force_text=0.6,
+        #     force_points=0.4,
+        #     only_move={'points': 'y', 'texts': 'xy'},
+        #     # prevent arrow striking through text (the warning you saw)
+        #     arrowprops=dict(
+        #         arrowstyle='-',
+        #         lw=0.8,
+        #         alpha=0.8,
+        #         shrinkA=8,                        # <-- key change
+        #         shrinkB=6                         # <-- key change
+        #     )
+        # )
+        # ax.margins(x=0.06, y=0.14)  # extra room for displaced labels
+        adjust_text(
+            texts,
+            x=bg[metric].to_numpy(),
+            y=bg['positive_prediction'].to_numpy(),
+            ax=ax,
+            lim=400,
+            expand=(1.20, 1.35),
+            expand_points=(1.25, 1.45),
+            force_text=0.6,
+            force_points=0.4,
+            only_move={'points': 'y', 'texts': 'xy'},
+            arrowprops=None                      # turn off leader lines
+        )
+        # ax.margins(x=0.06, y=0.14)
+
+
+
+        # Give labels a bit more room near plot edges
+        ax.margins(x=0.05, y=0.12)
+
         
         # Customize labels and title with larger fonts
         ax.set_xlabel(axis_label, fontsize=20, fontweight='bold')
-        ax.set_ylabel('Mean ICE Assay Activity', fontsize=20, fontweight='bold')
-        ax.set_title(f'{label} vs ICE Activity (Pearson r = {corr:.3f})',
-                    fontsize=24, pad=20)
+        # ax.set_ylabel('Mean ICE Assay Activity', fontsize=20, fontweight='bold')
+        ax.set_ylabel('MAV', fontsize=20, fontweight='bold')
+        ax.set_title(
+            # f'{label} vs ICE Activity (Pearson r = {corr:.3f})',
+            f'MAV vs. {label} (Pearson r = {corr:.3f})',
+            fontsize=24, pad=20
+        )
         
         # Enhance grid lines
         ax.grid(True, linestyle='--', alpha=0.7, linewidth=1.5)
         
-        # Update legend with larger font
-        legend = ax.legend(title='Cluster', labels=[f'Cluster {i+1}' for i in range(3)])
-        legend.get_title().set_fontsize(18)
-        for t in legend.get_texts():
-            t.set_fontsize(16)
+        if color_by == 'cluster':
+            # Update legend with larger font
+            legend = ax.legend(title='Cluster', labels=[f'Cluster {i+1}' for i in range(3)])
+            legend.get_title().set_fontsize(18)
+            for t in legend.get_texts():
+                t.set_fontsize(16)
             
         # Increase tick label sizes
         ax.tick_params(axis='both', which='major', labelsize=16)
@@ -904,7 +1045,8 @@ def plot_phthalate_activity_relationships():
         plt.close()
 
     # Extract molecular weight correlation info for caption
-    mw_metric = next((m for m in sorted_metrics if 'mw' in m[0]), None)
+    # mw_metric = next((m for m in sorted_metrics if 'mw' in m[0]), None)
+    mw_metric = next((m for m in sorted_metrics if 'MolWt' in m[0]), None)
     mw_corr = mw_metric[1][0] if mw_metric else None
 
     caption = f"""The point plots show relationships between molecular properties and mean ICE Assay Activity. 
@@ -916,7 +1058,7 @@ def plot_phthalate_activity_relationships():
     caption += ", ".join(corr_descriptions) + "."
     print(caption)
 
-plot_phthalate_activity_relationships()
+plot_phthalate_activity_relationships(color_by=color_by)
 # endregion
 
 
