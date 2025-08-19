@@ -178,7 +178,7 @@ def get_descriptors(
     }
     if use_phthalate_set:
         # Phthalate-specific descriptors
-        feats['LongestCarbonBackbone'] = longest_carbon_backbone(mol),  # longest carbon side chain length
+        feats['LongestCarbonBackbone'] = longest_carbon_backbone(mol)  # longest carbon side chain length
         feats['Isomer'] = classify_isomer(mol)  # 0=ortho,1=iso,2=tere
     # 3-D shape (needs conformer)
     AllChem.EmbedMolecule(mol, randomSeed=0xC0FFEE)
@@ -367,7 +367,7 @@ def compute_vifs(X: pd.DataFrame, *, add_intercept: bool = False) -> pd.DataFram
 
     return res.sort_values('VIF', ascending=False).reset_index(drop=True)
 
-def get_activity_df(cachedir: str | Path = Path('cache/entity_similarity')) -> pd.DataFrame:
+def get_activity_df(cachedir: str | Path = Path('cache/entity_similarity2')) -> pd.DataFrame:
     """Load the activity matrix from a parquet file."""
     # Define the path to the parquet file
     activity_df_path = cachedir / 'activity_matrix_filled.parquet'
@@ -711,6 +711,19 @@ def remove_high_vif_descriptors(
     X = X.dropna(axis=1, how='any')
 
     # drop any constant columns
+    import time
+    for col in X.columns:
+        print(f"Checking column '{col}' for constant values...")
+        try:
+            print(X[col].std())
+        except TypeError as e:
+            # find the first non-numeric value
+            non_numeric = X[col][~X[col].apply(lambda x: isinstance(x, (int, float)))]
+            if not non_numeric.empty:
+                print(f"Column '{col}' contains non-numeric values: {non_numeric.iloc[0]}")
+            else:
+                print(f"Column '{col}' is numeric but has no variance (std = {X[col].std()})")
+            raise e
     constant_cols = X.columns[X.std() == 0]
     X.drop(columns=constant_cols, inplace=True)
 

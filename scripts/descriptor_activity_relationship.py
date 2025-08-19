@@ -529,12 +529,14 @@ def PCA_plot(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process activity matrix for entity similarity.")
-    parser.add_argument('--cachedir', type=str, default='cache/entity_similarity',
+    parser.add_argument('--cachedir', type=str, default='cache/entity_similarity2',
                         help='Directory to cache the activity matrix.')
     parser.add_argument('--outdir', type=str, default='cache/descriptors',
                         help='Directory to cache the descriptors.')
     parser.add_argument('--descriptor_plots', action='store_true',
                         help='Plot the activity features against the descriptors.')
+    parser.add_argument('--generate_descriptors', action='store_true',
+                        help='Generate descriptors for the molecules even if cache exists.')
     parser.add_argument('--heatmap', action='store_true',
                         help='Draw a heatmap of the descriptor vs. activity correlation.')
     parser.add_argument('--lcb_plots', action='store_true',
@@ -565,7 +567,7 @@ if __name__ == "__main__":
 
     # Calculate descriptors for each molecule
     descriptor_parquet = outdir / 'descriptors.parquet'
-    if descriptor_parquet.exists():
+    if descriptor_parquet.exists() and not args.generate_descriptors:
         print(f"Loading existing descriptors from {descriptor_parquet}")
         descriptor_df = pd.read_parquet(descriptor_parquet)
     else:
