@@ -867,7 +867,11 @@ def plot_phthalate_activity_relationships(*, color_by='cluster', example_plot='l
     from adjustText import adjust_text  # auto-spread labels to avoid overlap
 
     X = df6[['MolWt', 'cLogP', 'RotB', 'BranchingRatio']]
-    y = df6['positive_prediction']
+    # y = df6['positive_prediction']
+    activity_matrix_filled = pd.read_parquet(cachedir / 'activity_matrix_filled.parquet')
+    Z_activity = (activity_matrix_filled - activity_matrix_filled.mean(axis=0)) / activity_matrix_filled.std(axis=0)
+    y = Z_activity.mean(axis=1).reindex(df6['inchi'])  # Z-scored mean activity value
+    df6['positive_prediction'] = y.to_list()  # add the Z-scored mean activity to df6
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
     model = LinearRegression()
