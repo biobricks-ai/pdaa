@@ -841,32 +841,41 @@ def plot_phthalate_activity_relationships(*, color_by='cluster', example_plot='l
     df6 = df4.merge(df5, on='inchi')
     df6 = df6[['inchi', 'mol', 'positive_prediction', 'example', 'cluster', 'cluster_color']]
 
-    # Extract feature dicts for each molecule
-    feats_list = []
-    unique_inchis = df6['inchi'].unique()
-    for inchi in unique_inchis:
-        mol = df6.loc[df6['inchi'] == inchi, 'mol'].values[0]
-        mol_H = Chem.AddHs(mol)  # Add hydrogens to the molecule
-        feats = get_descriptors(mol_H)
-        # limit the keys to the ones we want to use
-        feats = {k: v for k, v in feats.items() if k in [
-            'MolWt', 'cLogP', 'RotB', 'BranchingRatio'
-        ]}
-        feats_list.append(feats)
-
-    # Create a DataFrame from the list of dicts
-    features_df = pd.DataFrame(feats_list, index=unique_inchis)
-
-    # Merge features_df with df6 on 'inchi'
-    df6 = df6.merge(features_df, left_on='inchi', right_index=True, how='left')
-
     # create a logistic regression model to predict activity from the metrics
+    from scripts.utils.helpers import remove_high_vif_descriptors
     from sklearn.linear_model import LinearRegression
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import r2_score
     from adjustText import adjust_text  # auto-spread labels to avoid overlap
 
-    X = df6[['MolWt', 'cLogP', 'RotB', 'BranchingRatio']]
+    try:
+        X = pd.read_parquet('cache/descriptors/descriptors.parquet')
+        df6[['MolWt', 'cLogP', 'RotB', 'BranchingRatio']] = X.loc[df6['inchi'], ['MolWt', 'cLogP', 'RotB', 'BranchingRatio']].values
+
+        X = remove_high_vif_descriptors(X, vif_threshold=10)
+        print(f"Loaded descriptors from cache: {X.shape[0]} molecules, {X.shape[1]} features")
+    except FileNotFoundError:
+        # Extract feature dicts for each molecule
+        feats_list = []
+        unique_inchis = df6['inchi'].unique()
+        for inchi in unique_inchis:
+            mol = df6.loc[df6['inchi'] == inchi, 'mol'].values[0]
+            mol_H = Chem.AddHs(mol)  # Add hydrogens to the molecule
+            feats = get_descriptors(mol_H)
+            # limit the keys to the ones we want to use
+            feats = {k: v for k, v in feats.items() if k in [
+                'MolWt', 'cLogP', 'RotB', 'BranchingRatio'
+            ]}
+            feats_list.append(feats)
+
+        # Create a DataFrame from the list of dicts
+        features_df = pd.DataFrame(feats_list, index=unique_inchis)
+
+        # Merge features_df with df6 on 'inchi'
+        df6 = df6.merge(features_df, left_on='inchi', right_index=True, how='left')
+
+        X = df6[['MolWt', 'cLogP', 'RotB', 'BranchingRatio']]
+
     # y = df6['positive_prediction']
     activity_matrix_filled = pd.read_parquet(cachedir / 'activity_matrix_filled.parquet')
     Z_activity = (activity_matrix_filled - activity_matrix_filled.mean(axis=0)) / activity_matrix_filled.std(axis=0)

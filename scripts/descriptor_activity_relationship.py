@@ -913,7 +913,9 @@ if __name__ == "__main__":
     activity_df_stats.index.name = activity_df.columns.name or "title"
     # sort and save the stats
     activity_df_stats = activity_df_stats.sort_values(by='mean')
-    activity_df_stats.to_csv(outdir / 'activity_stats.csv')
+    stats_file = outdir / 'activity_stats.csv'
+    activity_df_stats.to_csv(stats_file)
+    print(f"Activity stats saved to {stats_file}")
 
     if args.cluster_heatmap:
         g = styled_heatmap(activity_df, outdir=outdir, row_group_size = 1)        
