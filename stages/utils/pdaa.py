@@ -380,7 +380,7 @@ SMARTS_PATTERNS = {
 # Pre-compile once at import time
 COMPILED_PATTERNS = {k: Chem.MolFromSmarts(v) for k, v in SMARTS_PATTERNS.items()}
 
-def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1]):
+def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1], match_mode="any"):
     """
     Return True if *mol* matches any phthalate class named in *modes*.
 
@@ -423,12 +423,15 @@ def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1
     matches["any"] = any(matches.values())
 
     # Decide by requested modes
-    for key in modes:
-        if key not in matches:
-            raise ValueError(f"Unknown mode: {key!r}")
-        if matches[key]:  # return True at first match
-            return True
-    return False
+    matches_sub = [matches[key] for key in modes]  # let this raise KeyError if unknown mode
+    if match_mode == "any":
+        return any(matches_sub)
+    elif match_mode == "one":
+        return sum(matches_sub) == 1
+    elif match_mode == "all":
+        return all(matches_sub)
+    else:
+        raise ValueError(f"Unknown match_mode: {match_mode}. Use 'any', 'one', or 'all'.")
 
 def smiles_is_phthalate(smiles, *, modes=("any",), check_elements=True, valid_num_rings=[1]):
     """
@@ -457,8 +460,10 @@ def smiles_is_phthalate(smiles, *, modes=("any",), check_elements=True, valid_nu
     return is_phthalate(mol, modes=modes, check_elements=check_elements, valid_num_rings=valid_num_rings)
 
 def is_true_phthalate(mol, *, check_elements=True, valid_num_rings=[1]):
-    return is_phthalate(mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate"),
-                        check_elements=check_elements, valid_num_rings=valid_num_rings)
+    return is_phthalate(
+        mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate"),
+        check_elements=check_elements, valid_num_rings=valid_num_rings
+    )
 
 def smiles_is_true_phthalate(smiles, *, check_elements=True, valid_num_rings=[1]):
     """
@@ -501,16 +506,10 @@ def is_diester_phthalate(mol, *, check_elements=True, valid_num_rings=[1]):
     bool
         True if the molecule is a diester phthalate.
     """
-    found_substructure = False
-    for isomer in ("ortho_phthalate", "meta_phthalate", "para_phthalate"):
-        if is_phthalate(mol, modes=(isomer,), check_elements=check_elements, valid_num_rings=valid_num_rings):
-            if not found_substructure:
-                found_substructure = True
-            else:
-                # If we find more than one isomer, it's not a diester phthalate
-                return False
-    
-    return found_substructure
+    return is_phthalate(
+        mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate"),
+        check_elements=check_elements, valid_num_rings=valid_num_rings, match_mode="one",
+    )
 
 def longest_carbon_backbone(mol: Chem.Mol) -> int:
     """

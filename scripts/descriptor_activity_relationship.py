@@ -15,7 +15,8 @@ sys.path.append('./')  # so utility scripts can be found
 from scripts.utils.helpers import (
     get_activity_df,
     styled_heatmap,
-    z_scale_df,
+    # z_scale_df,
+    zscore_columns,
     get_linear_model,
     get_descriptors,
     compute_vifs,
@@ -549,8 +550,8 @@ if __name__ == "__main__":
                         help='Plot the hierarchical clustered heatmap for compounds and assays.')
     # parser.add_argument('--normalize', action='store_true',
     #                     help='Normalize the activity matrix.')
-    # parser.add_argument('--z_score', action='store_true',
-    #                     help='Calculate z-scores of the activity matrix by column.')
+    parser.add_argument('--zscore', action='store_true',
+                        help='Calculate z-scores of the activity matrix by column.')
     args = parser.parse_args()
 
     cachedir = Path(args.cachedir)
@@ -595,8 +596,10 @@ if __name__ == "__main__":
         # show_C0_mols(descriptor_df)
 
     # Data preprocessing
-    X = z_scale_df(descriptor_df)
-    Y = z_scale_df(activity_df)
+    # X = z_scale_df(descriptor_df)
+    # Y = z_scale_df(activity_df)
+    X, _ = zscore_columns(descriptor_df)
+    Y, _ = zscore_columns(activity_df)
 
     # # Compute variance inflation factors (VIFs) to check for multicollinearity
     # vif_table = compute_vifs(X)
@@ -619,13 +622,15 @@ if __name__ == "__main__":
         # This will create a scatter plot for each descriptor against the mean activity
         # and a LOESS curve to show the trend.
         print("Plotting activity features against descriptors...")
+        plot_activity_df = Y if args.zscore else activity_df
+
         if args.no_linear_descriptor:
-            plot_activity_features(descriptor_df_cp, activity_df, linear_model=None, outdir=outdir)
+            plot_activity_features(descriptor_df_cp, plot_activity_df, linear_model=None, outdir=outdir)
         else:
             y_mean = activity_df.mean(axis=1)  # mean activity across all assays
             # add linear model predictions as a new descriptor, unscaled
             descriptor_df_cp['LinearModel'] = ols.predict(sm.add_constant(X))*y_mean.std() + y_mean.mean() 
-            plot_activity_features(descriptor_df_cp, activity_df, linear_model=ols, outdir=outdir)
+            plot_activity_features(descriptor_df_cp, plot_activity_df, linear_model=ols, outdir=outdir)
 
     if args.linear_plot:
         # Plot the linear regression model

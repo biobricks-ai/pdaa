@@ -532,7 +532,7 @@ def loess_ci(x, y, span=0.3, x_grid=None, level=0.95):
     conf    = pred.confidence(alpha=1 - level)
     return x_grid, pred.values, conf.lower, conf.upper
 
-def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFrame, *, linear_model = None, outdir: Path):
+def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFrame, *, linear_model = None, outdir: Path, isomer_boxplot: bool = True):
     """
     Plot the activity features against the descriptors.
 
@@ -571,7 +571,8 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
         'Kappa3': 'Kappa Shape Index 3',
         'LongestCarbonBackbone': 'Longest Carbon Backbone',
         'BranchingRatio': 'Branching Ratio',
-        'Isomer': 'Isomer Type (0=ortho, 1=iso, 2=tere)',
+        # 'Isomer': 'Isomer Type (0=ortho, 1=iso, 2=tere)',
+        'Isomer': 'Isomer Type',
         'Rgyr': 'Radius of Gyration [Å]',
         'LinearModel': 'Linear Model Prediction',
     }
@@ -603,19 +604,52 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
                 # Set xtick steps to 0.05
                 import matplotlib.ticker as mticker
                 ax.xaxis.set_major_locator(mticker.MultipleLocator(0.05))
-            else:
-                sns.regplot(
-                    x=x,
-                    y=Y,
-                    fit_reg=True,
-                    ci=95,
-                    scatter_kws={
-                        'alpha': 0.5,
-                        'edgecolors': 'white',
-                    },
-                    line_kws={'color': 'black', 'lw': 2},
-                    ax=ax
-                )
+            elif descriptor == 'Isomer':
+
+                if isomer_boxplot:
+                    # Categorical: use a boxplot for Isomer instead of scatter/regression
+                    tmp = pd.DataFrame({"Isomer": x, "mean_activity": Y}).dropna()
+                    present_isomer_ints = np.sort(tmp["Isomer"].unique())
+                    full_isomers = {0: "ortho", 1: "iso", 2: "tere"}  # ensure the order is consistent
+                    labels = [full_isomers[i] for i in present_isomer_ints]
+                    
+                    sns.boxplot(
+                        data=tmp,
+                        x="Isomer",
+                        y="mean_activity",
+                        order=present_isomer_ints,
+                        showfliers=False,
+                        # palette='Set2',
+                        color="#61b2d8",
+                        ax=ax,
+                    )
+                    ax.set_xticklabels(labels)
+
+                    # Overlay per-category means as markers
+                    means = (
+                        tmp.groupby("Isomer")["mean_activity"]
+                        .mean()
+                        .reindex(present_isomer_ints)
+                    )
+                    xs = [i for i, m in enumerate(means) if pd.notna(m)]
+                    ys = [m for m in means if pd.notna(m)]
+                    ax.scatter(xs, ys, marker="D", s=60, zorder=3, color='black')  # diamond markers at means
+
+                    ax.set_xticklabels(labels)
+                else:
+                    # Regression plot for isomer type
+                    sns.regplot(
+                        x=x,
+                        y=Y,
+                        fit_reg=True,
+                        ci=95,
+                        scatter_kws={
+                            'alpha': 0.5,
+                            'edgecolors': 'white',
+                        },
+                        line_kws={'color': 'black', 'lw': 2},
+                        ax=ax
+                    )
             
         else:
             sns.regplot(
