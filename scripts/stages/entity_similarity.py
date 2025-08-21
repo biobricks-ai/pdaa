@@ -16,9 +16,9 @@ from matplotlib.colors import to_hex, to_rgba
 
 import sys
 sys.path.append('./')
-import stages.utils.pdaa as pdaa
+from stages.utils.pdaa import pdaa
 import stages.utils.sparql as sparql
-from scripts.utils.helpers import clean_title, get_descriptors
+from scripts.utils.helpers import clean_title, get_descriptors, is_phthalate, is_diester_phthalate
 
 resourcedir = pathlib.Path('resources')
 
@@ -431,14 +431,14 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_cache=True):
     df2 = df.merge(inchi_mol_df, on='inchi')
 
     try:
-        assert all(pdaa.is_diester_phthalate(m) for m in example_phthalates)
+        assert all(is_diester_phthalate(m) for m in example_phthalates)
     except AssertionError as e:
         print("Some example phthalates are not diester phthalates. Please check the SMARTS pattern.")
         raise e
 
     print(f"Filtering for phthalates with modes = {phtalate_modes}...")
     filtered_phthalates = inchi_mol_df[inchi_mol_df['mol'].progress_apply(
-        lambda m: pdaa.is_phthalate(m, modes=phtalate_modes, check_elements=True, valid_num_rings=[1], match_mode='one')
+        lambda m: is_phthalate(m, modes=phtalate_modes, check_elements=True, valid_num_rings=[1], match_mode='one')
     )]['inchi']
     df3 = df2[df2['inchi'].isin(filtered_phthalates)]
     # Ensure both columns are of the same type (int)
@@ -612,7 +612,7 @@ def cluster_rows_and_make_heatmap(
         for i, inchi in enumerate(reordered_matrix.index):
             if (mol := Chem.MolFromInchi(inchi)) is None:
                 continue  # skip invalid InChIs
-            match_list = [pdaa.is_phthalate(mol, modes=(isomer,)) for isomer in isomers_list]
+            match_list = [is_phthalate(mol, modes=(isomer,)) for isomer in isomers_list]
             isomer_matches += match_list
             row_clusters[i] = np.argmax(match_list)  # assign the cluster based on the first match
             row_colors.append(
@@ -620,7 +620,7 @@ def cluster_rows_and_make_heatmap(
             )
 
             # for i in range(len(isomers_list)):
-            #     if pdaa.is_phthalate(mol, modes=(isomers_list[i],)):
+            #     if is_phthalate(mol, modes=(isomers_list[i],)):
             #         row_colors.append(isomer_colors[i])
             #         if i > 0:
             #             n_non_ortho += 1

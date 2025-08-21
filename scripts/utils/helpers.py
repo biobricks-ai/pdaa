@@ -25,9 +25,232 @@ from rdkit.Chem import (
     rdFingerprintGenerator as rfg
 )
 
-import sys
-sys.path.append('./')  # so utility scripts can be found
-from stages.utils.pdaa import is_phthalate, longest_carbon_backbone
+# Central registry of phthalate SMARTS patterns
+SMARTS_PATTERNS = {
+    # Ortho-phthalic acid di-ester
+    "ortho_phthalate": "c1cc(C(=O)[O;H0])c(C(=O)[O;H0])cc1",
+    # Any ortho acid, mono-, or di-ester; R = H or any group
+    "ortho_any":   "c1cc(C(=O)O[*])c(C(=O)O[*])cc1",
+    # Meta-phthalic acid di-ester (a.k.a., isophthalate)
+    "meta_phthalate": "c1cc(C(=O)[O;H0])cc(C(=O)[O;H0])c1",
+    # Any meta acid, mono-, or di-ester; R = H or any group
+    "meta_any": "c1cc(C(=O)O[*])cc(C(=O)O[*])c1",
+    # Para-phthalic acid di-ester (a.k.a., terephthalate)
+    "para_phthalate": "c1c(C(=O)[O;H0])ccc(C(=O)[O;H0])c1",
+    # Any para acid, mono-, or di-ester; R = H or any group
+    "para_any": "c1c(C(=O)O[*])ccc(C(=O)O[*])c1",
+}
+
+# Pre-compile once at import time
+COMPILED_PATTERNS = {k: AllChem.MolFromSmarts(v) for k, v in SMARTS_PATTERNS.items()}
+
+def phthalate_matches(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1]):
+    # Empty or None?
+    empty_match = np.zeros((1, len(modes)), dtype=bool)
+    if (mol is None) or (not isinstance(mol, AllChem.Mol)):
+        return empty_match
+
+    # Normalize modes -> tuple
+    if isinstance(modes, str) or not isinstance(modes, Iterable):
+        modes = (modes,)
+
+    # Structural guards
+    if check_elements and any(a.GetSymbol() not in ("C", "H", "O") for a in mol.GetAtoms()):
+        return empty_match
+    if (valid_num_rings is not None) and (mol.GetRingInfo().NumRings() not in valid_num_rings):
+        return empty_match
+
+    # Evaluate each pattern once
+    mol_h = AllChem.AddHs(mol)
+    matches = {
+        name: mol_h.HasSubstructMatch(pat)
+        for name, pat in COMPILED_PATTERNS.items()
+    }
+    matches["any"] = any(matches.values())
+
+    # Decide by requested modes
+    matches_sub = [matches[key] for key in modes]  # let this raise KeyError if unknown mode
+    return matches_sub
+
+def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1], match_mode="any"):
+    """
+    Return True if *mol* matches any phthalate class named in *modes*.
+
+    Parameters
+    ----------
+    mol : rdkit.AllChem.Mol
+    modes : str | Iterable[str]
+        Allowed keys: "diester", "ortho", "any".
+        "any" returns True if any of the other modes match.
+    check_elements : bool
+        If True, check that all atoms are C, H, or O.
+    valid_num_rings : list[int] | None
+        If not None, check that the number of rings in the molecule is in this list.
+
+    Notes
+    -----
+    • Only-C/H/O atoms and exactly one ring are required.
+    • The molecule is H-added internally because the SMARTS use [cH].
+    """
+
+    # Decide by requested modes
+    matches_sub = phthalate_matches(
+        mol, modes=modes, check_elements=check_elements, valid_num_rings=valid_num_rings
+    )
+    if match_mode == "any":
+        return any(matches_sub)
+    elif match_mode == "one":
+        return sum(matches_sub) == 1
+    elif match_mode == "all":
+        return all(matches_sub)
+    else:
+        raise ValueError(f"Unknown match_mode: {match_mode}. Use 'any', 'one', or 'all'.")
+
+def smiles_is_phthalate(smiles, *, modes=("any",), check_elements=True, valid_num_rings=[1]):
+    """
+    Check if a SMILES string represents a phthalate.
+
+    Parameters
+    ----------
+    smiles : str
+        SMILES representation of the molecule.
+    modes : str | Iterable[str]
+        Allowed keys: "diester", "ortho", "any".
+        "any" returns True if any of the other modes match.
+    check_elements : bool
+        If True, check that all atoms are C, H, or O.
+    valid_num_rings : list[int] | None
+        If not None, check that the number of rings in the molecule is in this list.
+
+    Returns
+    -------
+    bool
+        True if the SMILES represents a phthalate.
+    """
+    mol = AllChem.MolFromSmiles(smiles)
+    if mol is None:
+        return False
+    return is_phthalate(mol, modes=modes, check_elements=check_elements, valid_num_rings=valid_num_rings)
+
+def is_true_phthalate(mol, *, check_elements=True, valid_num_rings=[1]):
+    return is_phthalate(
+        mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate"),
+        check_elements=check_elements, valid_num_rings=valid_num_rings
+    )
+
+def smiles_is_true_phthalate(smiles, *, check_elements=True, valid_num_rings=[1]):
+    """
+    Check if a SMILES string represents a phthalate.
+
+    Parameters
+    ----------
+    smiles : str
+        SMILES representation of the molecule.
+    check_elements : bool
+        If True, check that all atoms are C, H, or O.
+    valid_num_rings : list[int] | None
+        If not None, check that the number of rings in the molecule is in this list.
+
+    Returns
+    -------
+    bool
+        True if the SMILES represents a phthalate.
+    """
+    mol = AllChem.MolFromSmiles(smiles)
+    if mol is None:
+        return False
+    return is_true_phthalate(mol, check_elements=check_elements, valid_num_rings=valid_num_rings)
+
+def is_diester_phthalate(mol, *, check_elements=True, valid_num_rings=[1]):
+    """
+    Check if a molecule is a diester phthalate.
+
+    Parameters
+    ----------
+    mol : rdkit.AllChem.Mol
+        Molecule to check.
+    check_elements : bool
+        If True, check that all atoms are C, H, or O.
+    valid_num_rings : list[int] | None
+        If not None, check that the number of rings in the molecule is in this list.
+
+    Returns
+    -------
+    bool
+        True if the molecule is a diester phthalate.
+    """
+    return is_phthalate(
+        mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate"),
+        check_elements=check_elements, valid_num_rings=valid_num_rings, match_mode="one",
+    )
+
+def longest_carbon_backbone(mol: AllChem.Mol) -> int:
+    """
+    Given an RDKit Mol that is already known to be a phthalate, return
+    the number of carbon atoms in the longest un-branched alkyl segment
+    (the “backbone”) of its ester side-chains.
+
+    Strategy
+    --------
+    1.  Locate each ester linkage with the SMARTS pattern 'C(=O)O'.
+        - Index 0 is the carbonyl carbon.
+        - Index 2 is the single-bonded oxygen that connects to the side-chain.
+    2.  For each of those oxygens, identify the first carbon in the side-chain
+        (the oxygen's neighbour that is not the carbonyl carbon).
+    3.  Depth-first search outward **only through carbon atoms** to find the
+        maximum path length.  At every branch we explore all possibilities
+        and keep the longest.
+    4.  Track the maximum over both ester arms and return it.
+
+    The function ignores non-carbon atoms and avoids cycles by passing a
+    `prev_idx` argument during recursion.
+
+    Parameters
+    ----------
+    mol : rdkit.AllChem.Mol
+        Molecule already validated as a phthalate.
+
+    Returns
+    -------
+    int
+        Length of the longest linear carbon segment (backbone).
+    """
+    def _dfs(atom, visited = set()) -> int:
+        """Depth-first search returning longest carbon chain length from `atom`."""
+        if atom.GetIdx() not in visited:
+            visited.add(atom.GetIdx())
+
+        max_len = 0
+        for nbr in atom.GetNeighbors():
+            if (nbr.GetIdx() in visited) or nbr.GetSymbol() != 'C':
+                continue
+            branch_len = _dfs(nbr, visited)
+            max_len = max(max_len, branch_len)
+
+        # if all neighbors for atom checked, remove it from visited
+        visited.remove(atom.GetIdx())
+        return 1 + max_len  # count this carbon
+
+    ester_pattern = AllChem.MolFromSmarts('C(=O)O')
+    longest = 0
+
+    for match in mol.GetSubstructMatches(ester_pattern):
+        carbonyl_c_idx, _, single_o_idx = match
+        single_o = mol.GetAtomWithIdx(single_o_idx)
+
+        # Identify the first carbon in the side-chain (O-C).
+        side_c = next(
+            (nbr for nbr in single_o.GetNeighbors()
+             if nbr.GetIdx() != carbonyl_c_idx and nbr.GetSymbol() == 'C'),
+            None
+        )
+        if side_c is None:
+            continue  # malformed ester; skip
+
+        chain_len = _dfs(side_c, {single_o_idx})
+        longest = max(longest, chain_len)
+
+    return longest
 
 def PCA_plot(
         X: pd.DataFrame,

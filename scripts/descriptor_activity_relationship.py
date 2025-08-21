@@ -12,7 +12,6 @@ import statsmodels.api as sm
 
 import sys
 sys.path.append('./')  # so utility scripts can be found
-# from stages.utils.pdaa import is_phthalate, longest_carbon_backbone
 from scripts.utils.helpers import (
     get_activity_df,
     styled_heatmap,
@@ -964,10 +963,10 @@ if __name__ == "__main__":
         plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, range_sets=[{1, 2, 3}, {4, 5, 6}, set(range(7, max_lcb + 1))], outdir=outdir, do_stat_tests=True)
         # show_C0_mols(descriptor_df_cp)
 
-    # # Compute variance inflation factors (VIFs) to check for multicollinearity
-    # vif_table = compute_vifs(X)
-    # print("VIF Table:")
-    # print(vif_table)
+    # Compute variance inflation factors (VIFs) to check for multicollinearity
+    vif_table = compute_vifs(X)
+    print("VIF Table:")
+    print(vif_table)
     
     # for descriptor in vif_table['descriptor']:
     #     if vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0] > 10:

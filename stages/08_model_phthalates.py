@@ -17,7 +17,7 @@ from tqdm import tqdm
 from rdkit import Chem
 from collections.abc import Iterable
 
-from stages.utils.pdaa import is_phthalate
+from scripts.utils.helpers import is_phthalate
 
 async def async_predict(inchi: str, tok: str, sem: asyncio.Semaphore):
     async with sem:
