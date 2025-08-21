@@ -5,7 +5,7 @@ chemical_cluster_label.py
 
 Hierarchical clustering of chemicals (rows) based on an assay activity matrix.
 
-- Input matrix: cache/entity_similarity2/activity_matrix_filled.parquet
+- Input matrix: cache/entity_similarity/activity_matrix_filled.parquet
   (rows = chemicals, columns = assays; values in [0,1] or z-scores)
 - Per-assay (column) z-scoring with ddof=0; drop zero-variance assays.
 - Similarity: Pearson correlation across assays between chemicals.
@@ -530,8 +530,8 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("cache/entity_similarity2/activity_matrix_filled.parquet"),
-        help="Input parquet path [default: cache/entity_similarity2/activity_matrix_filled.parquet]",
+        default=Path("cache/entity_similarity/activity_matrix_filled.parquet"),
+        help="Input parquet path [default: cache/entity_similarity/activity_matrix_filled.parquet]",
     )
     parser.add_argument(
         "--outdir",

@@ -9,7 +9,7 @@ from xgboost import XGBClassifier
 
 cachedir = Path("cache")
 modeldir = cachedir / "eadb"
-datadir = cachedir / "entity_similarity2"
+datadir = cachedir / "entity_similarity"
 
 # Create a new XGBClassifier instance
 model = XGBClassifier()

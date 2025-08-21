@@ -26,7 +26,7 @@ Run
 ```bash
 python sparse_dictionary_learning_phthalates.py
 ```
-Assumes `cache/entity_similarity2/activity_matrix_filled.parquet` exists, as
+Assumes `cache/entity_similarity/activity_matrix_filled.parquet` exists, as
 in the original hierarchical clustering script.
 """
 
@@ -54,7 +54,7 @@ RANDOM_STATE = 42
 # ---------------------------------------------------------------------------
 
 cachedir = Path("cache")
-datadir = cachedir / "entity_similarity2"
+datadir = cachedir / "entity_similarity"
 
 activity_matrix_fp = datadir / "activity_matrix_filled.parquet"
 if not activity_matrix_fp.exists():

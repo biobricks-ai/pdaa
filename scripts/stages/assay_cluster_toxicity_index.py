@@ -11,7 +11,7 @@ Pipeline:
 5) Save cluster assignments, PC1 loadings, per-chemical cluster scores, TI tables, and basic plots.
 
 CLI:
-    --input (default: cache/entity_similarity2/activity_matrix_filled.parquet)
+    --input (default: cache/entity_similarity/activity_matrix_filled.parquet)
     --outdir (default: parent of input)
     --n-clusters (int) manual override
     --corr-threshold (float in (0,1)) optional dendrogram cut at d = 1 - τ
@@ -867,7 +867,7 @@ def make_plots(
 def main():
     parser = argparse.ArgumentParser(description="Compute toxicity index via assay clustering and cluster PC1.")
     parser.add_argument("--input", type=str,
-                        default="cache/entity_similarity2/activity_matrix_filled.parquet",
+                        default="cache/entity_similarity/activity_matrix_filled.parquet",
                         help="Path to activity matrix Parquet file (rows=chemicals, cols=assays).")
     parser.add_argument("--outdir", type=str, default=None,
                         help="Output directory (default: parent of input).")

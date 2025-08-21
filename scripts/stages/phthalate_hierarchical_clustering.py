@@ -9,7 +9,7 @@ from scipy.cluster.hierarchy import linkage, dendrogram
 import matplotlib.pyplot as plt
 
 cachedir = Path("cache")
-datadir = cachedir / "entity_similarity2"
+datadir = cachedir / "entity_similarity"
 # Load the phthalates data
 activity_matrix_filled = pd.read_parquet(datadir / "activity_matrix_filled.parquet")
 
@@ -29,7 +29,9 @@ def example_cluster():
     plt.xlabel('Phthalates')
     plt.ylabel('Distance')
     plt.tight_layout()
-    plt.savefig(datadir / "phthalate_dendrogram.png")
+    outpath = datadir / "phthalate_dendrogram.png"
+    plt.savefig(outpath)
+    print(f"Saved dendrogram to {outpath}")
 
 # --- Sweep over multiple linkage methods and distance metrics
 linkage_methods = ['ward', 'average', 'complete']

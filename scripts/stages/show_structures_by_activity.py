@@ -176,9 +176,9 @@ def make_activity_panel(df: pd.DataFrame, N: int = 5, out_path: str = "activity_
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Create an activity panel from a DataFrame.")
-    parser.add_argument("--input_data", default="cache/entity_similarity2/activity_matrix_filled.parquet", help="Path to input parquet file with InChI and assay data.")
+    parser.add_argument("--input_data", default="cache/entity_similarity/activity_matrix_filled.parquet", help="Path to input parquet file with InChI and assay data.")
     parser.add_argument("--N", type=int, default=5, help="Number of compounds per group (default: 5).")
-    parser.add_argument("--outdir", default="cache/entity_similarity2", help="Output directory.")
+    parser.add_argument("--outdir", default="cache/entity_similarity", help="Output directory.")
     parser.add_argument("--out_file", default="activity_panel.png", help="Output image path (default: activity_panel.png).")
     
     args = parser.parse_args()

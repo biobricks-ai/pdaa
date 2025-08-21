@@ -113,7 +113,7 @@ def _styled_heatmap(
 tqdm.pandas()
 
 brickdir = pathlib.Path('brick')
-cachedir = pathlib.Path('cache') / 'entity_similarity2'
+cachedir = pathlib.Path('cache') / 'entity_similarity'
 cachedir.mkdir(parents=True, exist_ok=True)
 
 # region EXAMPLE PHTHALATES ====================================================================

@@ -24,14 +24,14 @@ CLI examples
 ------------
 # Simple sweep with existing artifacts, 5 bootstraps, report to outdir/
 python choose_k_assay_clusters.py \
-  --matrix cache/entity_similarity2/activity_matrix_filled.parquet \
+  --matrix cache/entity_similarity/activity_matrix_filled.parquet \
   --ed-artifacts cache/ed_artifacts \
   --k-range 8 24 4 --repeats 5 --bootstrap-frac 0.8 \
   --outdir cache/choose_k_report
 
 # Build artifacts first (pass-through to cluster_category_scoring.py build-posteriors)
 python choose_k_assay_clusters.py \
-  --matrix cache/entity_similarity2/activity_matrix_filled.parquet \
+  --matrix cache/entity_similarity/activity_matrix_filled.parquet \
   --build-posteriors \
   --bp-script scripts/stages/cluster_category_scoring.py \
   --bp-corpus resources/assay_names.csv --bp-text-col text \

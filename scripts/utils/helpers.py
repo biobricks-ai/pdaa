@@ -591,7 +591,7 @@ def compute_vifs(X: pd.DataFrame, *, add_intercept: bool = False) -> pd.DataFram
 
     return res.sort_values('VIF', ascending=False).reset_index(drop=True)
 
-def get_activity_df(cachedir: str | Path = Path('cache/entity_similarity2')) -> pd.DataFrame:
+def get_activity_df(cachedir: str | Path = Path('cache/entity_similarity')) -> pd.DataFrame:
     """Load the activity matrix from a parquet file."""
     # Define the path to the parquet file
     activity_df_path = cachedir / 'activity_matrix_filled.parquet'

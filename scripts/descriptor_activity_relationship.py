@@ -871,7 +871,7 @@ def PCA_plot(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process activity matrix for entity similarity.")
-    parser.add_argument('--cachedir', type=str, default='cache/entity_similarity2',
+    parser.add_argument('--cachedir', type=str, default='cache/entity_similarity',
                         help='Directory to cache the activity matrix.')
     parser.add_argument('--outdir', type=str, default='cache/descriptors',
                         help='Directory to cache the descriptors.')
