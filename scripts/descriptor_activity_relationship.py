@@ -750,11 +750,13 @@ def plot_activity_boxplot_lcb_isomer(
             ax.text(-0.05, 1.05, lab, transform=ax.transAxes,      # just outside upper-left
                     fontsize=14, fontweight='bold', va='top', ha='right')
 
-        plt.savefig(outdir / "combined_lcb_binary.png")
-
+        outpath = outdir / "combined_lcb_binary.png"
         ax = axdict
     else:
-        plt.savefig(outdir / "lcb_isomer_boxplot.png")
+        outpath = outdir / "lcb_isomer_boxplot.png"
+
+    plt.savefig(outpath)
+    print(f"Saved plot to {outpath}")
 
     plt.show()
     return ax
@@ -783,11 +785,6 @@ def show_C0_mols(descriptor_df: pd.DataFrame):
             img = Draw.MolToImage(mol, size=(300, 300))
             fname = f"{inchi.replace('/', '_')}.png"
             img.save(img_path / fname)
-
-
-
-
-
 
 def PCA_plot(
         X: pd.DataFrame,

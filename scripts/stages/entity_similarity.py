@@ -16,9 +16,11 @@ from matplotlib.colors import to_hex, to_rgba
 
 import sys
 sys.path.append('./')
-from stages.utils.pdaa import pdaa
+import stages.utils.pdaa as pdaa
 import stages.utils.sparql as sparql
-from scripts.utils.helpers import clean_title, get_descriptors, is_phthalate, is_diester_phthalate
+from scripts.utils.helpers import (
+    clean_title, get_descriptors, is_phthalate, is_diester_phthalate, phthalate_matches
+)
 
 resourcedir = pathlib.Path('resources')
 
@@ -118,6 +120,7 @@ cachedir.mkdir(parents=True, exist_ok=True)
 example_phthalates_df = pd.read_csv(resourcedir / 'example_phthalates.csv')
 # shorten the names
 example_phthalates_df['name'] = example_phthalates_df['name'].str.replace('Dimethyl ', '')
+example_phthalates_df.sort_values(by='name', inplace=True)
 
 example_phthalates = [Chem.MolFromSmiles(smiles) for smiles in example_phthalates_df['smiles']]
 example_names = example_phthalates_df['name'].tolist()
@@ -437,8 +440,17 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_cache=True):
         raise e
 
     print(f"Filtering for phthalates with modes = {phtalate_modes}...")
+    phthalate_options = {
+        'check_elements': True,
+        'valid_num_rings': [1],
+    }
+
     filtered_phthalates = inchi_mol_df[inchi_mol_df['mol'].progress_apply(
-        lambda m: is_phthalate(m, modes=phtalate_modes, check_elements=True, valid_num_rings=[1], match_mode='one')
+        # need to check that mol both has matching modes and is a diester 
+        lambda m: \
+            is_phthalate(
+                m, modes=phtalate_modes, **phthalate_options, match_mode='one'
+            ) and is_diester_phthalate(m, **phthalate_options)
     )]['inchi']
     df3 = df2[df2['inchi'].isin(filtered_phthalates)]
     # Ensure both columns are of the same type (int)
@@ -454,7 +466,7 @@ phthalate_df = build_phthalate_ice_activity_df(
     # use_cache=False,
 )[['uri','title','inchi','mol','positive_prediction']]
 
-# endregion
+
 
 # region HEATMAP & DENSITY OF PHTHALATE ACTIVITY ===============================
 def cluster_rows_and_make_heatmap(
@@ -519,7 +531,7 @@ def cluster_rows_and_make_heatmap(
         row_colors = None
     elif color_by == 'isomer':
         # ignore clustering for now
-        n_clusters = len(isomers_list)
+        n_clusters = len(phtalate_modes)
         row_clusters = np.zeros(len(activity_matrix_filled), dtype=int)
     elif color_by == 'cluster':
         n_clusters = 2
@@ -606,30 +618,21 @@ def cluster_rows_and_make_heatmap(
     # Instead, color based on ortho, iso, or tere phthalate
     
     if color_by == 'isomer':
-        isomer_matches = np.array([0 for _ in isomers_list])
+        isomer_matches = np.array([0 for _ in phtalate_modes])
         row_colors = []
         # n_non_ortho = 0
         for i, inchi in enumerate(reordered_matrix.index):
             if (mol := Chem.MolFromInchi(inchi)) is None:
                 continue  # skip invalid InChIs
-            match_list = [is_phthalate(mol, modes=(isomer,)) for isomer in isomers_list]
+            match_list = phthalate_matches(
+                mol, phtalate_modes, check_elements=True, valid_num_rings=[1], match_mode='one'
+            )
             isomer_matches += match_list
             row_clusters[i] = np.argmax(match_list)  # assign the cluster based on the first match
             row_colors.append(
                 isomer_colors[tuple(match_list)]
             )
 
-            # for i in range(len(isomers_list)):
-            #     if is_phthalate(mol, modes=(isomers_list[i],)):
-            #         row_colors.append(isomer_colors[i])
-            #         if i > 0:
-            #             n_non_ortho += 1
-            #             # print(f"non-ortho phthalate: {Chem.MolToSmiles(mol)} ({isomers_list[i]})")
-            #             # # save image of the molecule
-            #             # img = Draw.MolToImage(mol, size=(300, 300))
-            #             # img.save("mol.png")
-            #             # raise ValueError("Testing: non-ortho phthalate detected")
-            #         break
         # keep the single colour-bar that _styled_heatmap makes
         # print(f"Number of non-ortho phthalates: {n_non_ortho}")
         print("isomer matches found:")
@@ -832,7 +835,7 @@ clustered_phthalate_df = cluster_rows_and_make_heatmap(
 # save dataframes
 phthalate_df.to_csv(cachedir / 'phthalate_df.csv', index=False)
 clustered_phthalate_df.to_csv(cachedir / 'clustered_phthalate_df.csv', index=False)
-# endregion
+
 
 # region CHARACTERIZE PRIORITY PHTHALATES ===============================================================
 def plot_phthalate_activity_relationships(*, color_by='cluster', example_plot='legend'):
@@ -923,13 +926,29 @@ def plot_phthalate_activity_relationships(*, color_by='cluster', example_plot='l
     if example_plot == 'legend':
         # import itertools
 
-        example_names = [
-            "DEHP", "DIDP", "DINP", "MCINP", "MCIOP", "MHIDP", "MHINP", "MIDP", "MINP", "MOIDP", "MOINP"
-        ]
-        example_names.sort()  # Sort names for consistent ordering
+        # example_names = [
+        #     "DEHP", "DIDP", "DINP", "MCINP", "MCIOP", "MHIDP", "MHINP", "MIDP", "MINP", "MOIDP", "MOINP",
+        #     "DIUP", "DTDP",
+        # ]
+        # example_names.sort()  # Sort names for consistent ordering
 
-        # Distinct marker styles
-        marker_styles = ["o", "s", "D", "^", "v", "<", ">", "P", "X", "*", "h"]
+        example_names = example_phthalates_df['name'].tolist()
+        # # Distinct marker styles
+        marker_styles = ["o", "s", "D", "^", "v", "<", ">", "P", "X", "*", "h", "p", "8"]
+        # marker_styles = []
+        # for smiles in example_phthalates_df['smiles']:
+        #     match = phthalate_matches(
+        #         Chem.MolFromSmiles(smiles),
+        #         modes=phtalate_modes,
+        #         check_elements=True,
+        #         valid_num_rings=[1],
+        #     )
+        #     if match[0]:
+        #         marker_styles.append('+')  # Ortho
+        #     elif match[1]:
+        #         marker_styles.append('X')
+        # breakpoint()
+
 
         # Cycle through colors from seaborn or matplotlib
         palette = sns.color_palette(
@@ -1094,9 +1113,7 @@ def plot_phthalate_activity_relationships(*, color_by='cluster', example_plot='l
     caption += ", ".join(corr_descriptions) + "."
     print(caption)
 
-
 plot_phthalate_activity_relationships(color_by=color_by)
-# endregion
 
 
 # region SAMPLE PHTHALATES IN EACH ACTIVITY PERCENTILE ===============================================================

@@ -46,12 +46,13 @@ COMPILED_PATTERNS = {k: AllChem.MolFromSmarts(v) for k, v in SMARTS_PATTERNS.ite
 
 def phthalate_matches(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1]):
     # Empty or None?
-    empty_match = np.zeros((1, len(modes)), dtype=bool)
+    empty_match = [False for _ in modes]
     if (mol is None) or (not isinstance(mol, AllChem.Mol)):
         return empty_match
 
     # Normalize modes -> tuple
-    if isinstance(modes, str) or not isinstance(modes, Iterable):
+    # if isinstance(modes, str) or not isinstance(modes, Iterable):
+    if not isinstance(modes, (List, Tuple)):
         modes = (modes,)
 
     # Structural guards
@@ -923,7 +924,9 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
     for j in range(len(key_descriptors), len(axes)):
         fig.delaxes(axes[j])
 
-    plt.savefig(outdir / "activity_by_descriptors_CI.png")
+    outpath = outdir / "activity_by_descriptors.png"
+    plt.savefig(outpath)
+    print(f"Saved activity vs. descriptors plot to {outpath}")
     plt.show()
 
 def pca_variance_ratio(X: pd.DataFrame) -> PCA:
