@@ -11,7 +11,7 @@ Choose the number of assay clusters (K) using ED category guidance.
 Inputs
 ------
 - Activity matrix (rows=chemicals, cols=assays) [Parquet]
-- ED artifacts produced by cluster_category_scoring.py build-posteriors:
+- ED artifacts produced by cluster_category_scoring.py build_posteriors:
   * word_category_posteriors.csv (rows=words, cols=categories) = P(k|w)
   * category_prototypes_q.csv    (rows=categories, cols=words) = P(w|k)
 
@@ -25,20 +25,20 @@ CLI examples
 # Simple sweep with existing artifacts, 5 bootstraps, report to outdir/
 python choose_k_assay_clusters.py \
   --matrix cache/entity_similarity/activity_matrix_filled.parquet \
-  --ed-artifacts cache/ed_artifacts \
-  --k-range 8 24 4 --repeats 5 --bootstrap-frac 0.8 \
+  --ed_artifacts cache/ed_artifacts \
+  --k_range 8 24 4 --repeats 5 --bootstrap_frac 0.8 \
   --outdir cache/choose_k_report
 
-# Build artifacts first (pass-through to cluster_category_scoring.py build-posteriors)
+# Build artifacts first (pass-through to cluster_category_scoring.py build_posteriors)
 python choose_k_assay_clusters.py \
   --matrix cache/entity_similarity/activity_matrix_filled.parquet \
-  --build-posteriors \
-  --bp-script scripts/stages/cluster_category_scoring.py \
-  --bp-corpus resources/assay_names.csv --bp-text-col text \
-  --bp-vocab-size 5000 --bp-bg-mode corpus --bp-priors uniform \
-  --bp-outdir cache/ed_artifacts --bp-stopwords resources/stopwords.pkl \
-  --bp-collocations --bp-collocation-threshold 30 \
-  --k-range 8 24 4 --repeats 5 --bootstrap-frac 0.8 \
+  --build_posteriors \
+  --bp_script scripts/stages/cluster_category_scoring.py \
+  --bp_corpus resources/assay_names.csv --bp_text_col text \
+  --bp_vocab_size 5000 --bp_bg_mode corpus --bp_priors uniform \
+  --bp_outdir cache/ed_artifacts --bp_stopwords resources/stopwords.pkl \
+  --bp_collocations --bp_collocation_threshold 30 \
+  --k_range 8 24 4 --repeats 5 --bootstrap_frac 0.8 \
   --outdir cache/choose_k_report
 
 Outputs
@@ -46,7 +46,7 @@ Outputs
 - choose_k_metrics.csv        : per-K means and standard errors for all metrics
 - choose_k_perrun.csv         : per-run metrics (diagnostic)
 - chosen_k.json               : chosen K and rationale
-- per-K directory with Pkc matrices and summaries (optional via --emit-perk)
+- per-K directory with Pkc matrices and summaries (optional via --emit_perk)
 """
 
 from __future__ import annotations
@@ -107,6 +107,7 @@ def _zscore_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
 def _assay_distance_matrix(Xz: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """Compute Pearson |r| distance between assays."""
     assays = list(Xz.columns)
+
     R = np.corrcoef(Xz.values, rowvar=False)
     R = np.clip(R, -1.0, 1.0)
     D = 1.0 - np.abs(R)
@@ -133,6 +134,21 @@ def _cluster_members(labels: np.ndarray) -> Dict[int, List[int]]:
     return mem
 
 # --- Metrics utilities ---
+
+def _threshold_for_k(Z: np.ndarray, n_leaves: int, k: int) -> float:
+    """
+    Return the dendrogram cut distance t_K that yields exactly k clusters under
+    fcluster(..., criterion='maxclust'). Uses the height of the (n_leaves - k)-th merge.
+    """
+    if k >= n_leaves:
+        return 0.0
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}")
+    heights = Z[:, 2].astype(float)
+    idx = n_leaves - k - 1
+    if idx < 0 or idx >= len(heights):
+        return 0.0
+    return float(heights[idx])
 
 def _cosine_sim(A: np.ndarray, B: np.ndarray) -> float:
     """Mean cosine similarity between matched rows of A and B (A,B shape: [C,K])."""
@@ -222,60 +238,63 @@ def compute_metrics_for_labels(
     frag_max = float(np.max(ne_k))
 
     # Return: metrics so far (stability filled later when comparing runs), P_kc, and members
-    rm = RunMetrics(
+    run_metrics = RunMetrics(
         k=C, repeat=-1, re_mean=re_mean,
         sharp_mean=sharp_mean, sharp_frac=sharp_frac,
         frag_max=frag_max, stab_cos=None, ari=None, nmi=None
     )
-    return rm, P_kc, cluster_members
+    return run_metrics, P_kc, cluster_members
 
 def main():
     ap = argparse.ArgumentParser(description="Label-guided selection of assay cluster count (K).")
     io = ap.add_argument_group("Core I/O")
     io.add_argument("--matrix", required=True, help="Parquet matrix: rows=chemicals, cols=assays.")
-    io.add_argument("--ed-artifacts", default=None,
+    io.add_argument("--ed_artifacts", default=None,
                     help="Directory containing word_category_posteriors.csv and category_prototypes_q.csv.")
     io.add_argument("--outdir", required=True, help="Directory to write reports.")
 
     sweep = ap.add_argument_group("K sweep & stability")
-    sweep.add_argument("--k-grid", nargs="+", type=int, default=None, help="Explicit list of K values (e.g., 8 12 16).")
-    sweep.add_argument("--k-range", nargs=3, type=int, default=None,
+    sweep.add_argument("--k_grid", nargs="+", type=int, default=None, help="Explicit list of K values (e.g., 8 12 16).")
+    sweep.add_argument("--corr_threshold", type=float, default=None,
+                       help="Correlation threshold tau in (0,1). For each K, compute its implied dendrogram cut distance "
+                       "t_K and skip K if t_K > 1 - tau.")
+    sweep.add_argument("--k_range", nargs=3, type=int, default=None,
                        help="Start Stop Step for K (inclusive start, inclusive stop).")
     sweep.add_argument("--repeats", type=int, default=5, help="Number of bootstrap repeats per K (default: 5).")
-    sweep.add_argument("--bootstrap-frac", type=float, default=0.8,
+    sweep.add_argument("--bootstrap_frac", type=float, default=0.8,
                        help="Fraction of chemicals to sample with replacement per bootstrap (default: 0.8).")
     sweep.add_argument("--linkage", type=str, default="average", choices=["complete", "average"],
                        help="Hierarchical linkage (default: average).")
-    sweep.add_argument("--top-n-words", type=int, default=30, help="Global top-N words per cluster for metrics.")
-    sweep.add_argument("--emit-perk", action="store_true", help="Write per-K P(k|c) matrices to disk.")
+    sweep.add_argument("--top_n_words", type=int, default=30, help="Global top-N words per cluster for metrics.")
+    sweep.add_argument("--emit_perk", action="store_true", help="Write per-K P(k|c) matrices to disk.")
 
     crit = ap.add_argument_group("Selection criteria (defaults are conservative)")
-    crit.add_argument("--sharpness-threshold", type=float, default=0.8, help="Weighted mean sharpness threshold.")
-    crit.add_argument("--sharpness-frac", type=float, default=0.9, help="Min fraction of clusters with max P(k|c) >= 0.6.")
-    crit.add_argument("--frag-threshold", type=float, default=2.5, help="Max allowed NE_k (inverse HHI).")
-    crit.add_argument("--stab-threshold", type=float, default=0.9, help="Min cosine stability across repeats.")
-    crit.add_argument("--one-se", action="store_true", help="Apply one-standard-error rule on RE(K).")
+    crit.add_argument("--sharpness_threshold", type=float, default=0.8, help="Weighted mean sharpness threshold.")
+    crit.add_argument("--sharpness_frac", type=float, default=0.9, help="Min fraction of clusters with max P(k|c) >= 0.6.")
+    crit.add_argument("--frag_threshold", type=float, default=2.5, help="Max allowed NE_k (inverse HHI).")
+    crit.add_argument("--stab_threshold", type=float, default=0.9, help="Min cosine stability across repeats.")
+    crit.add_argument("--one_se", action="store_true", help="Apply one-standard-error rule on RE(K).")
 
-    bp = ap.add_argument_group("Build-posteriors passthrough (optional)")
-    bp.add_argument("--build-posteriors", action="store_true",
-                    help="If set, call cluster_category_scoring.py build-posteriors before sweep.")
-    bp.add_argument("--bp-script", default="scripts/stages/cluster_category_scoring.py",
+    bp = ap.add_argument_group("build_posteriors passthrough (optional)")
+    bp.add_argument("--build_posteriors", action="store_true",
+                    help="If set, call cluster_category_scoring.py build_posteriors before sweep.")
+    bp.add_argument("--bp_script", default="scripts/stages/cluster_category_scoring.py",
                     help="Path to cluster_category_scoring.py.")
-    bp.add_argument("--bp-corpus", default=None, help="--corpus for build-posteriors.")
-    bp.add_argument("--bp-text-col", default="title", help="--text-col for build-posteriors.")
-    bp.add_argument("--bp-vocab", default=None, help="--vocab for build-posteriors.")
-    bp.add_argument("--bp-vocab-size", type=int, default=5000, help="--vocab-size for build-posteriors.")
-    bp.add_argument("--bp-bg-mode", choices=["uniform", "corpus"], default="corpus", help="--bg-mode.")
-    bp.add_argument("--bp-priors", choices=["uniform", "from-seeds", "from-file"], default="uniform", help="--priors.")
-    bp.add_argument("--bp-priors-file", default=None, help="--priors-file.")
-    bp.add_argument("--bp-stopwords", default=None, help="--stopwords.")
-    bp.add_argument("--bp-collocations", action="store_true", help="--collocations for build-posteriors.")
-    bp.add_argument("--bp-collocation-threshold", type=int, default=30, help="--collocation-threshold for build-posteriors.")
-    bp.add_argument("--bp-outdir", default=None, help="Where to write ED artifacts (defaults to --ed-artifacts).")
+    bp.add_argument("--bp_corpus", default=None, help="--corpus for build_posteriors.")
+    bp.add_argument("--bp_text_col", default="title", help="--text_col for build_posteriors.")
+    bp.add_argument("--bp_vocab", default=None, help="--vocab for build_posteriors.")
+    bp.add_argument("--bp_vocab_size", type=int, default=5000, help="--vocab_size for build_posteriors.")
+    bp.add_argument("--bp_bg_mode", choices=["uniform", "corpus"], default="corpus", help="--bg_mode.")
+    bp.add_argument("--bp_priors", choices=["uniform", "from-seeds", "from-file"], default="uniform", help="--priors.")
+    bp.add_argument("--bp_priors_file", default=None, help="--priors_file.")
+    bp.add_argument("--bp_stopwords", default=None, help="--stopwords.")
+    bp.add_argument("--bp_collocations", action="store_true", help="--collocations for build_posteriors.")
+    bp.add_argument("--bp_collocation_threshold", type=int, default=30, help="--collocation_threshold for build_posteriors.")
+    bp.add_argument("--bp_outdir", default=None, help="Where to write ED artifacts (defaults to --ed_artifacts).")
 
-    ap.add_argument("--cluster-script", default="scripts/stages/assay_cluster_toxicity_index.py",
+    ap.add_argument("--cluster_script", default="scripts/stages/assay_cluster_toxicity_index.py",
                     help="Path to assay_cluster_toxicity_index.py to import WordCloud logic for p_c(w).")
-    ap.add_argument("--random-seed", type=int, default=42, help="Base random seed.")
+    ap.add_argument("--random_seed", type=int, default=42, help="Base random seed.")
     args = ap.parse_args()
 
     # Logging
@@ -288,30 +307,30 @@ def main():
         ed_dir = Path(args.bp_outdir or (args.ed_artifacts or (outdir / "ed_artifacts")))
         ed_dir.mkdir(parents=True, exist_ok=True)
         cmd = [
-            sys.executable, args.bp_script, "build-posteriors",
+            sys.executable, args.bp_script, "build_posteriors",
             "--outdir", str(ed_dir),
-            "--bg-mode", args.bp_bg_mode,
+            "--bg_mode", args.bp_bg_mode,
             "--priors", args.bp_priors,
-            "--vocab-size", str(args.bp_vocab_size),
-            "--text-col", args.bp_text_col,
+            "--vocab_size", str(args.bp_vocab_size),
+            "--text_col", args.bp_text_col,
         ]
         if args.bp_corpus: cmd += ["--corpus", args.bp_corpus]
         if args.bp_vocab: cmd += ["--vocab", args.bp_vocab]
-        if args.bp_priors_file: cmd += ["--priors-file", args.bp_priors_file]
+        if args.bp_priors_file: cmd += ["--priors_file", args.bp_priors_file]
         if args.bp_stopwords: cmd += ["--stopwords", args.bp_stopwords]
         if args.bp_collocations: cmd += ["--collocations"]
         if args.bp_collocation_threshold is not None:
-            cmd += ["--collocation-threshold", str(args.bp_collocation_threshold)]
+            cmd += ["--collocation_threshold", str(args.bp_collocation_threshold)]
         logging.info("Building ED artifacts via: %s", " ".join(cmd))
         rc = os.spawnvp(os.P_WAIT, cmd[0], cmd)
         if rc != 0:
-            raise SystemExit(f"build-posteriors failed with exit code {rc}")
+            raise SystemExit(f"build_posteriors failed with exit code {rc}")
         # Point ed-artifacts to built directory if not provided
         if args.ed_artifacts is None:
             args.ed_artifacts = str(ed_dir)
 
     if args.ed_artifacts is None:
-        raise SystemExit("--ed-artifacts is required (or provide --build-posteriors to create them).")
+        raise SystemExit("--ed_artifacts is required (or provide --build_posteriors to create them).")
 
     # Load ED artifacts
     P_kw = pd.read_csv(Path(args.ed_artifacts) / "word_category_posteriors.csv", index_col=0)
@@ -333,17 +352,34 @@ def main():
     # Try to import cluster module for WordCloud word matrix
     cluster_mod = _import_cluster_module(args.cluster_script)
     if cluster_mod is None:
-        raise SystemExit("Could not import assay_cluster_toxicity_index.py. Provide --cluster-script with a valid path.")
+        raise SystemExit("Could not import assay_cluster_toxicity_index.py. Provide --cluster_script with a valid path.")
+
+    # --- Preflight: if tau is given, warn if globally unattainable (min distance > 1 - tau) ---
+    if args.corr_threshold is not None:
+        tau = float(args.corr_threshold)
+        t_allowed = 1.0 - tau
+        if hasattr(cluster_mod, "assay_distance_matrix"):
+            D_full, Dcond_full, _ = cluster_mod.assay_distance_matrix(Xz)
+        else:
+            D_full, Dcond_full, _ = _assay_distance_matrix(Xz)
+        min_d = float(np.min(Dcond_full)) if Dcond_full.size else float("inf")
+        if not np.isfinite(min_d) or min_d > t_allowed + 1e-12:
+            logging.warning(
+                "corr_threshold τ=%.3f is globally unattainable for this matrix: "
+                "min pairwise distance d_min=%.3f > 1-τ=%.3f (i.e., max |r| < τ). "
+                "All K < n_assays will fail unless τ is lowered.",
+                tau, min_d, t_allowed
+            )
 
     # Prepare K grid
     if args.k_grid:
         K_list = list(sorted(set(int(k) for k in args.k_grid)))
     elif args.k_range:
         start, stop, step = args.k_range
-        if step <= 0: raise SystemExit("--k-range step must be positive.")
+        if step <= 0: raise SystemExit("--k_range step must be positive.")
         K_list = list(range(int(start), int(stop) + 1, int(step)))
     else:
-        raise SystemExit("Provide either --k-grid or --k-range.")
+        raise SystemExit("Provide either --k_grid or --k_range.")
 
     rng = np.random.RandomState(args.random_seed)
 
@@ -358,32 +394,63 @@ def main():
         metrics_runs: List[RunMetrics] = []
 
         for r in range(args.repeats):
-            # Bootstrap rows (chemicals) with replacement to compute correlations
-            frac = max(min(args.bootstrap_frac, 1.0), 0.05)
-            n = Xz.shape[0]
-            idx = rng.randint(0, n, size=max(2, int(round(frac * n))))
-            Xz_boot = Xz.iloc[idx, :]
+            try:
+                # Bootstrap rows (chemicals) with replacement to compute correlations
+                frac = max(min(args.bootstrap_frac, 1.0), 0.05)
+                n = Xz.shape[0]
+                idx = rng.randint(0, n, size=max(2, int(round(frac * n))))
+                Xz_boot = Xz.iloc[idx, :]
 
-            # Distances and linkage
-            if hasattr(cluster_mod, "assay_distance_matrix"):
-                D, D_condensed, assays_boot = cluster_mod.assay_distance_matrix(Xz_boot)
-            else:
-                D, D_condensed, assays_boot = _assay_distance_matrix(Xz_boot)
-            Z = linkage(D_condensed, method=args.linkage, optimal_ordering=True)
+                # Distances
+                if hasattr(cluster_mod, "assay_distance_matrix"):
+                    D, D_condensed, assays_boot = cluster_mod.assay_distance_matrix(Xz_boot)
+                else:
+                    D, D_condensed, assays_boot = _assay_distance_matrix(Xz_boot)
 
-            # Labels for this K
-            labels = _labels_for_k(Z, K)
-            labels = _relabel_stable(labels)
+                # If tau is impossible for this repeat (no pair meets |r| >= tau), skip early
+                if args.corr_threshold is not None:
+                    tau = float(args.corr_threshold)
+                    t_allowed = 1.0 - tau
+                    d_min = float(np.min(D_condensed)) if D_condensed.size else float("inf")
+                    if (not np.isfinite(d_min)) or d_min > t_allowed + 1e-12:
+                        raise ValueError(
+                            f"repeat={r}: unattainable corr_threshold τ={tau:.3f} "
+                            f"(d_min={d_min:.3f} > 1-τ={t_allowed:.3f}; max|r|<τ)"
+                        )
 
-            # Metrics for this run (without stability)
-            rm, Pkc, members = compute_metrics_for_labels(
-                assays=assays_boot, labels=labels, P_kw=P_kw, Q_kw=Q,
-                top_n_words=args.top_n_words, cluster_mod=cluster_mod,
-            )
-            rm.k = K; rm.repeat = r
-            metrics_runs.append(rm)
-            Pkc_runs.append(Pkc)
-            label_runs.append(labels)
+                # Linkage and (optional) per-K enforcement
+                Z = linkage(D_condensed, method=args.linkage, optimal_ordering=True)
+                if args.corr_threshold is not None:
+                    t_k = _threshold_for_k(Z, n_leaves=len(assays_boot), k=K)
+                    t_allowed = 1.0 - float(args.corr_threshold)
+                    if t_k > t_allowed + 1e-12:
+                        raise ValueError(
+                            f"repeat={r}: K={K} violates corr_threshold tau={args.corr_threshold:.3f} "
+                            f"(requires cut at d≈{t_k:.3f} > 1-τ={t_allowed:.3f})"
+                        )
+
+
+                # Labels for this K
+                labels = _labels_for_k(Z, K)
+                labels = _relabel_stable(labels)
+
+                # Metrics for this run (without stability)
+                run_metrics, Pkc, members = compute_metrics_for_labels(
+                    assays=assays_boot, labels=labels, P_kw=P_kw, Q_kw=Q,
+                    top_n_words=args.top_n_words, cluster_mod=cluster_mod,
+                )
+                run_metrics.k = K; run_metrics.repeat = r
+                metrics_runs.append(run_metrics)
+                Pkc_runs.append(Pkc)
+                label_runs.append(labels)
+            except ValueError as e:
+                # logging.warning("Skipping repeat %d for K=%d: %s", r, K, e)
+                continue
+
+        # If every repeat failed threshold, skip this K
+        if not metrics_runs:
+            logging.warning("Skipping K=%d: all %d repeats violated --corr_threshold.", K, args.repeats)
+            continue
 
         # Stability across repeats (pairwise averaged)
         cos_sims = []
@@ -430,6 +497,10 @@ def main():
         # Optionally emit P(k|c) matrices
         if args.emit_perk:
             pd.DataFrame(Pkc_runs[0], columns=P_kw.columns).to_csv(outdir / f"Pkc_K{K:03d}_run0.csv", index=False)
+
+    # If all K were skipped by corr_threshold, stop early with guidance
+    if not per_k_rows:
+        raise SystemExit("No K values satisfied --corr_threshold; relax the threshold or adjust --k_grid/--k_range.")
 
     # Write reports
     per_k_df = pd.DataFrame(per_k_rows).sort_values("K")

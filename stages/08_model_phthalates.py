@@ -71,7 +71,7 @@ with sqlite3.connect(bb.assets('chemprop-transformer').cvae_sqlite) as con:
     property_tokens = pd.read_sql_query("SELECT property_token FROM property", con)['property_token'].tolist()
     property_tokens = sorted(list(set(property_tokens)))
 
-# LOAD ZINC PHTALATES DATA =====================================================
+# LOAD ZINC PHTHALATES DATA =====================================================
 raw_df = pd.read_parquet('cache/zinc_phthalates/zinc_phthalates.parquet')
 # raw_df = pd.read_parquet('cache/priority_phthalates/priority_phthalates.parquet')
 # top_df = raw_df.sort_values(by='max_similarity', ascending=False)[['inchi', 'max_similarity']].drop_duplicates()

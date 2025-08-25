@@ -12,8 +12,8 @@ Hierarchical clustering of chemicals (rows) based on an assay activity matrix.
 - Distance: d = 1 - |r|  (absolute-correlation distance).
 - Linkage: average (default) or complete.
 - Cluster count selection:
-    * --n-clusters K: cut to exactly K (log silhouette).
-    * --corr-threshold τ in (0,1): cut at distance 1-τ.
+    * --n_clusters K: cut to exactly K (log silhouette).
+    * --corr_threshold τ in (0,1): cut at distance 1-τ.
     * Otherwise: automatic K by maximizing average silhouette over a range,
       excluding singleton members from the average; ties break toward smaller K.
 
@@ -317,7 +317,7 @@ def cluster_chemicals(
     elif corr_threshold is not None:
         chosen_mode = "corr_threshold"
         if not (0.0 < float(corr_threshold) < 1.0):
-            raise ValueError("--corr-threshold must be in (0,1).")
+            raise ValueError("--corr_threshold must be in (0,1).")
         t = 1.0 - float(corr_threshold)
         labs = fcluster(Z, t=t, criterion="distance")
         labels_final = stable_relabel_clusters(labs, order_keys)
@@ -410,7 +410,7 @@ def load_example_phthalates(examples_csv: Path) -> pd.DataFrame:
         from rdkit.Chem import inchi as rdInchi
     except Exception as e:
         raise ImportError(
-            "RDKit is required to convert SMILES to InChI for --examples-csv. "
+            "RDKit is required to convert SMILES to InChI for --examples_csv. "
             "Install RDKit or provide 'inchi' directly."
         ) from e
 
@@ -540,19 +540,19 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Output directory [default: parent of --input]",
     )
     parser.add_argument(
-        "--n-clusters",
+        "--n_clusters",
         type=int,
         default=None,
         help="Cut dendrogram to exactly K clusters.",
     )
     parser.add_argument(
-        "--corr-threshold",
+        "--corr_threshold",
         type=float,
         default=None,
         help="Correlation threshold τ in (0,1); cut at distance d=1-τ.",
     )
     parser.add_argument(
-        "--silhouette-range",
+        "--silhouette_range",
         type=int,
         nargs=2,
         default=(2, 60),
@@ -567,13 +567,13 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Linkage method [default: average].",
     )
     parser.add_argument(
-        "--examples-csv",
+        "--examples_csv",
         type=Path,
         default=None,
         help="Optional CSV with example chemicals (columns: name and inchi OR smiles).",
     )
     parser.add_argument(
-        "--random-state",
+        "--random_state",
         type=int,
         default=42,
         help="Random seed for determinism where applicable (hierarchical clustering is deterministic).",
@@ -589,9 +589,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
 
-    # Prefer --n-clusters over --corr-threshold if both provided.
+    # Prefer --n_clusters over --corr_threshold if both provided.
     if args.n_clusters is not None and args.corr_threshold is not None:
-        logging.warning("--n-clusters provided together with --corr-threshold; proceeding with --n-clusters only.")
+        logging.warning("--n_clusters provided together with --corr_threshold; proceeding with --n_clusters only.")
 
     input_path: Path = args.input
     if not input_path.exists():

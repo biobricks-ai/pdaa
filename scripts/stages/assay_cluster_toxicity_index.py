@@ -13,13 +13,13 @@ Pipeline:
 CLI:
     --input (default: cache/entity_similarity/activity_matrix_filled.parquet)
     --outdir (default: parent of input)
-    --n-clusters (int) manual override
-    --corr-threshold (float in (0,1)) optional dendrogram cut at d = 1 - τ
-    --silhouette-range (two ints, default 5 60)
-    --random-state (int, default 42)
+    --n_clusters (int) manual override
+    --corr_threshold (float in (0,1)) optional dendrogram cut at d = 1 - τ
+    --silhouette_range (two ints, default 5 60)
+    --random_state (int, default 42)
 
 Notes:
-- If both --n-clusters and --corr-threshold are given, --n-clusters takes precedence (warning logged).
+- If both --n_clusters and --corr_threshold are given, --n_clusters takes precedence (warning logged).
 - Silhouette optimization uses precomputed distances and ignores singleton clusters for the score.
 - Warnings:
   * >20% clusters are single-assay (kept, marked).
@@ -164,10 +164,28 @@ def cluster_assays(
     # Average linkage; optimal_ordering improves dendrogram readability
     Z = linkage(D_condensed, method=linkage_method, optimal_ordering=True)
 
+    # If both are given: enforce that the REQUIRED merge height for K is ≤ (1 - τ)
     if n_clusters is not None and corr_threshold is not None:
-        logging.warning("--n-clusters provided; ignoring --corr-threshold.")
+        tau = float(corr_threshold)
+        t_allowed = 1.0 - tau
+        heights = Z[:, 2].astype(float)
+        n_leaves = len(assays)
+        m = n_leaves - int(n_clusters)  # merges included to reach K clusters
+        if not (1 <= m <= len(heights)):
+            raise ValueError(f"Cannot compute a valid cut for k={n_clusters}.")
+        required = float(heights[m - 1])  # max included merge height
+        if required > t_allowed + 1e-12:
+            raise ValueError(
+                f"Requested k={n_clusters} violates corr_threshold τ={corr_threshold:.3f} "
+                f"(requires merge at d≈{required:.3f} > 1-τ={t_allowed:.3f})."
+            )
+        labels = _labels_for_k(Z, n_clusters)
+        C = int(len(np.unique(labels)))
+        # For visualization, draw a midpoint line (cosmetic; does not affect enforcement)
+        t_line = _threshold_for_k(Z, n_leaves=n_leaves, k=C)
+        avg_sil = _silhouette_for_labels(D, labels)
 
-    if n_clusters is not None:
+    elif n_clusters is not None:
         labels = _labels_for_k(Z, n_clusters)
         C = int(len(np.unique(labels)))
         t_line = _threshold_for_k(Z, n_leaves=len(assays), k=C)
@@ -871,25 +889,26 @@ def main():
                         help="Path to activity matrix Parquet file (rows=chemicals, cols=assays).")
     parser.add_argument("--outdir", type=str, default=None,
                         help="Output directory (default: parent of input).")
-    parser.add_argument("--n-clusters", type=int, default=None,
-                        help="Manual number of clusters. If provided with --corr-threshold, this takes precedence.")
-    parser.add_argument("--corr-threshold", type=float, default=None,
+    parser.add_argument("--n_clusters", type=int, default=None,
+                        help="Manual number of clusters. If provided with --corr_threshold, K must satisfy τ "
+                         "(i.e., the implied cut distance for K must be ≤ 1 - τ).")
+    parser.add_argument("--corr_threshold", type=float, default=None,
                         help="Correlation threshold τ in (0,1). Dendrogram cut at distance d = 1 - τ.")
-    parser.add_argument("--silhouette-range", type=int, nargs=2, default=[2, 60],
+    parser.add_argument("--silhouette_range", type=int, nargs=2, default=[2, 60],
                         help="Range [lo hi] of candidate cluster counts for silhouette-based selection.")
-    parser.add_argument("--random-state", type=int, default=42,
+    parser.add_argument("--random_state", type=int, default=42,
                         help="Random seed for deterministic behavior where applicable.")
     parser.add_argument("--linkage", type=str, default="average", choices=["complete", "average"],
                         help="Linkage method for hierarchical clustering (default: 'average').")
-    parser.add_argument("--examples-csv", type=str, default=None,
+    parser.add_argument("--examples_csv", type=str, default=None,
                         help="Optional CSV with example phthalates to annotate on the TI histogram; "
                              "expects columns ['name', 'inchi'] or ['name', 'smiles'].")
-    parser.add_argument("--use-pc1", action="store_true",
+    parser.add_argument("--use_pc1", action="store_true",
                     help="Use principal component 1 (PC1)-based cluster scores for TI. "
                             "Default is mean standardized activity within each cluster.")
-    parser.add_argument("--cluster-wordcloud", action="store_true",
+    parser.add_argument("--cluster_wordcloud", action="store_true",
                         help="Generate word frequency distributions for each cluster based on assay names.")
-    parser.add_argument("--per-cluster-top", action="store_true",
+    parser.add_argument("--per_cluster-top", action="store_true",
                         help="Use per-cluster top-N words for word histograms; otherwise use global top-N.")
     # Uncomment for debug mode; currently not used in the script
     # parser.add_argument("--debug", action="store_true",
@@ -911,7 +930,7 @@ def main():
 
     if args.corr_threshold is not None:
         if not (0.0 < args.corr_threshold < 1.0):
-            raise ValueError("--corr-threshold must be in (0,1).")
+            raise ValueError("--corr_threshold must be in (0,1).")
 
     # Load and standardize
     logging.info("Loading data from %s", input_path)
@@ -953,7 +972,7 @@ def main():
         Xz=Xz, assays=assays, cluster_members=cluster_members
     )
 
-    # TI computation: default uses mean scores; --use-pc1 switches to PC1 scores
+    # TI computation: default uses mean scores; --use_pc1 switches to PC1 scores
     if args.use_pc1:
         ti_df = compute_ti(scores_df, var_explained)
         logging.info("TI mode: PC1-based cluster scores.")

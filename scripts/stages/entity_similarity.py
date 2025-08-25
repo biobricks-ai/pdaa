@@ -141,7 +141,7 @@ isomers_list = [
     # "meta_phthalate",
     "para_phthalate"
 ]
-phtalate_modes = tuple(isomers_list)
+phthalate_modes = tuple(isomers_list)
 
 # which phthalate has the lowest mean ICE activity?
 # region ICE ACTIVITY ===============================================================
@@ -439,7 +439,7 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_cache=True):
         print("Some example phthalates are not diester phthalates. Please check the SMARTS pattern.")
         raise e
 
-    print(f"Filtering for phthalates with modes = {phtalate_modes}...")
+    print(f"Filtering for phthalates with modes = {phthalate_modes}...")
     phthalate_options = {
         'check_elements': True,
         'valid_num_rings': [1],
@@ -449,7 +449,7 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_cache=True):
         # need to check that mol both has matching modes and is a diester 
         lambda m: \
             is_phthalate(
-                m, modes=phtalate_modes, **phthalate_options, match_mode='one'
+                m, modes=phthalate_modes, **phthalate_options, match_mode='one'
             ) and is_diester_phthalate(m, **phthalate_options)
     )]['inchi']
     df3 = df2[df2['inchi'].isin(filtered_phthalates)]
@@ -531,7 +531,7 @@ def cluster_rows_and_make_heatmap(
         row_colors = None
     elif color_by == 'isomer':
         # ignore clustering for now
-        n_clusters = len(phtalate_modes)
+        n_clusters = len(phthalate_modes)
         row_clusters = np.zeros(len(activity_matrix_filled), dtype=int)
     elif color_by == 'cluster':
         n_clusters = 2
@@ -618,14 +618,14 @@ def cluster_rows_and_make_heatmap(
     # Instead, color based on ortho, iso, or tere phthalate
     
     if color_by == 'isomer':
-        isomer_matches = np.array([0 for _ in phtalate_modes])
+        isomer_matches = np.array([0 for _ in phthalate_modes])
         row_colors = []
         # n_non_ortho = 0
         for i, inchi in enumerate(reordered_matrix.index):
             if (mol := Chem.MolFromInchi(inchi)) is None:
                 continue  # skip invalid InChIs
             match_list = phthalate_matches(
-                mol, phtalate_modes, check_elements=True, valid_num_rings=[1], match_mode='one'
+                mol, phthalate_modes, check_elements=True, valid_num_rings=[1], match_mode='one'
             )
             isomer_matches += match_list
             row_clusters[i] = np.argmax(match_list)  # assign the cluster based on the first match
@@ -939,7 +939,7 @@ def plot_phthalate_activity_relationships(*, color_by='cluster', example_plot='l
         # for smiles in example_phthalates_df['smiles']:
         #     match = phthalate_matches(
         #         Chem.MolFromSmiles(smiles),
-        #         modes=phtalate_modes,
+        #         modes=phthalate_modes,
         #         check_elements=True,
         #         valid_num_rings=[1],
         #     )

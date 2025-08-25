@@ -575,7 +575,7 @@ def choose_priors(categories: List[str],
         return counts / counts.sum()
     if mode == "from-file":
         if not priors_file:
-            raise ValueError("--priors from-file requires --priors-file")
+            raise ValueError("--priors from-file requires --priors_file")
         import json as _json
         import pandas as _pd
         if priors_file.lower().endswith(".json"):
@@ -618,7 +618,7 @@ def cmd_score(args):
     external_bg = None
     if args.bg_mode == "external":
         if not args.bg_file:
-            raise SystemExit("--bg-mode=external requires --bg-file")
+            raise SystemExit("--bg_mode=external requires --bg_file")
         ext = pd.read_csv(args.bg_file)
         if set(ext.columns) >= set(df.columns):
             s = ext.iloc[0][df.columns].astype(float)
@@ -708,7 +708,7 @@ def cmd_build_posteriors(args):
         pd.DataFrame({"word": vocab, "weight": np.ones(V, dtype=float)}).to_csv(Path(args.outdir) / "background.csv", index=False)
     else:
         if not args.corpus:
-            raise SystemExit("--bg-mode=corpus requires --corpus")
+            raise SystemExit("--bg_mode=corpus requires --corpus")
         texts = read_corpus(args.corpus, args.text_col)
         p_bg = background_from_corpus(
             texts, vocab, stopwords,
@@ -727,7 +727,7 @@ def cmd_build_posteriors(args):
     post_df.to_csv(Path(args.outdir) / "word_category_posteriors.csv", index=True)
 
     manifest = {
-        "pipeline": "cluster_category_scoring.build-posteriors",
+        "pipeline": "cluster_category_scoring.build_posteriors",
         "vocab_size": V,
         "alpha": float(alpha),
         "bump": float(args.bump),
@@ -762,35 +762,35 @@ def main():
     ps.add_argument("--alpha", type=float, default=None, help="Dirichlet smoothing weight towards background")
     ps.add_argument("--tau", type=float, default=2.0, help="Temperature for softmax calibration")
     ps.add_argument("--bump", type=float, default=1.0, help="Prototype bump for seed tokens")
-    ps.add_argument("--bg-mode", choices=["cluster-mean", "uniform", "external"], default="cluster-mean",
+    ps.add_argument("--bg_mode", choices=["cluster-mean", "uniform", "external"], default="cluster-mean",
                     help="Background mode for P(w). 'uniform'/'external' are invariant to number of clusters.")
-    ps.add_argument("--bg-file", default=None, help="CSV for --bg-mode=external (two columns word,weight or single-row).")
-    ps.add_argument("--emit-word-posteriors", action="store_true", help="Also write word_category_posteriors.csv")
-    ps.add_argument("--class-priors", choices=["uniform", "from-seeds"], default="uniform",
+    ps.add_argument("--bg_file", default=None, help="CSV for --bg_mode=external (two columns word,weight or single-row).")
+    ps.add_argument("--emit_word-posteriors", action="store_true", help="Also write word_category_posteriors.csv")
+    ps.add_argument("--class_priors", choices=["uniform", "from-seeds"], default="uniform",
                     help="Priors used when emitting P(category|word).")
 
-    # build-posteriors subcommand
-    pb = sub.add_parser("build-posteriors", help="Build P(k|w) and prototypes from corpus or vocab")
+    # build_posteriors subcommand
+    pb = sub.add_parser("build_posteriors", help="Build P(k|w) and prototypes from corpus or vocab")
     pb.add_argument("--corpus", help="Text corpus path (.txt or .csv/.tsv). If provided, can build vocab/background from it.")
-    pb.add_argument("--text-col", default="title", help="Column for text in --corpus (default: title)")
+    pb.add_argument("--text_col", default="title", help="Column for text in --corpus (default: title)")
     pb.add_argument("--vocab", help="Optional fixed vocab.txt (one token per line). If omitted, build from corpus.")
-    pb.add_argument("--vocab-size", type=int, default=5000, help="Target vocab size when building from corpus (default: 5000).")
+    pb.add_argument("--vocab_size", type=int, default=5000, help="Target vocab size when building from corpus (default: 5000).")
     pb.add_argument("--seeds", help="JSON or YAML mapping category -> [seed tokens]. If omitted, uses defaults.")
     pb.add_argument("--stopwords", help="Optional stopwords.txt (one word per line) or stopwords.pkl (set).")
     pb.add_argument("--phrases", help="(Deprecated when --collocations is set) Optional phrases.txt; kept for backward compatibility.")
     pb.add_argument("--collocations", action="store_true", help="Enable WordCloud bigram extraction (collocations=True).")
-    pb.add_argument("--collocation-threshold", type=int, default=30, help="WordCloud collocation cutoff (default: 30).")
+    pb.add_argument("--collocation_threshold", type=int, default=30, help="WordCloud collocation cutoff (default: 30).")
     pb.add_argument("--alpha", type=float, default=None, help="Dirichlet smoothing weight (default: 50/V).")
     pb.add_argument("--bump", type=float, default=1.0, help="Prototype bump for seed tokens (default: 1.0).")
-    pb.add_argument("--bg-mode", choices=["uniform", "corpus"], default="corpus", help="Background mode for prototypes.")
+    pb.add_argument("--bg_mode", choices=["uniform", "corpus"], default="corpus", help="Background mode for prototypes.")
     pb.add_argument("--priors", choices=["uniform", "from-seeds", "from-file"], default="uniform", help="Category priors mode.")
-    pb.add_argument("--priors-file", help="If --priors=from-file, provide JSON mapping or CSV with [category, prior].")
+    pb.add_argument("--priors_file", help="If --priors=from-file, provide JSON mapping or CSV with [category, prior].")
     pb.add_argument("--outdir", required=True, help="Output directory for artifacts")
 
     args = parser.parse_args()
     if args.cmd == "score":
         return cmd_score(args)
-    if args.cmd == "build-posteriors":
+    if args.cmd == "build_posteriors":
         return cmd_build_posteriors(args)
 
 

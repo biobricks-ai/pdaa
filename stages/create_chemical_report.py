@@ -179,7 +179,7 @@ def get_aopwiki_predictions(chemical_name):
 def get_aop_specific_predictions(chemical_name, aop):
     predictions = pdaa.get_predictions_with_sqlite_cache(inchi)
 
-# region PRIORITY PHTALATE HEATMAP =======================================================
+# region PRIORITY PHTHALATE HEATMAP =======================================================
 import rdkit, rdkit.Chem, rdkit.Chem.AllChem, rdkit.DataStructs, rdkit.Chem.rdFingerprintGenerator
 import itertools as it
 dehp = rdkit.Chem.MolFromSmiles('CCCCC(CC)COC(=O)C1=CC=CC=C1C(=O)OCC(CC)CCCC')
