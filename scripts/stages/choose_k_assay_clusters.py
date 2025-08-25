@@ -387,75 +387,88 @@ def main():
     per_k_rows: List[Dict] = []
     chosen = None
 
-    # Precompute full assay distance matrix once per bootstrap
-    for K in tqdm(K_list):
-        Pkc_runs: List[np.ndarray] = []
-        label_runs: List[np.ndarray] = []
-        metrics_runs: List[RunMetrics] = []
+    # Accumulate per-K artifacts across repeats
+    per_k_data = {K: {"Pkc_runs": [], "label_runs": [], "metrics_runs": []} for K in K_list}
 
-        for r in range(args.repeats):
-            try:
-                # Bootstrap rows (chemicals) with replacement to compute correlations
-                frac = max(min(args.bootstrap_frac, 1.0), 0.05)
-                n = Xz.shape[0]
-                idx = rng.randint(0, n, size=max(2, int(round(frac * n))))
-                Xz_boot = Xz.iloc[idx, :]
+    # Repeats outermost: compute D/Z once per repeat and reuse across all K
+    for r in range(args.repeats):
+        # Bootstrap rows (chemicals) with replacement to compute correlations
+        frac = max(min(args.bootstrap_frac, 1.0), 0.05)
+        n = Xz.shape[0]
+        idx = rng.randint(0, n, size=max(2, int(round(frac * n))))
+        Xz_boot = Xz.iloc[idx, :]
 
-                # Distances
-                if hasattr(cluster_mod, "assay_distance_matrix"):
-                    D, D_condensed, assays_boot = cluster_mod.assay_distance_matrix(Xz_boot)
-                else:
-                    D, D_condensed, assays_boot = _assay_distance_matrix(Xz_boot)
+        # Distances for this repeat
+        if hasattr(cluster_mod, "assay_distance_matrix"):
+            D, D_condensed, assays_boot = cluster_mod.assay_distance_matrix(Xz_boot)
+        else:
+            D, D_condensed, assays_boot = _assay_distance_matrix(Xz_boot)
 
-                # If tau is impossible for this repeat (no pair meets |r| >= tau), skip early
-                if args.corr_threshold is not None:
-                    tau = float(args.corr_threshold)
-                    t_allowed = 1.0 - tau
-                    d_min = float(np.min(D_condensed)) if D_condensed.size else float("inf")
-                    if (not np.isfinite(d_min)) or d_min > t_allowed + 1e-12:
-                        raise ValueError(
-                            f"repeat={r}: unattainable corr_threshold τ={tau:.3f} "
-                            f"(d_min={d_min:.3f} > 1-τ={t_allowed:.3f}; max|r|<τ)"
-                        )
-
-                # Linkage and (optional) per-K enforcement
-                Z = linkage(D_condensed, method=args.linkage, optimal_ordering=True)
-                if args.corr_threshold is not None:
-                    t_k = _threshold_for_k(Z, n_leaves=len(assays_boot), k=K)
-                    t_allowed = 1.0 - float(args.corr_threshold)
-                    if t_k > t_allowed + 1e-12:
-                        raise ValueError(
-                            f"repeat={r}: K={K} violates corr_threshold tau={args.corr_threshold:.3f} "
-                            f"(requires cut at d≈{t_k:.3f} > 1-τ={t_allowed:.3f})"
-                        )
-
-
-                # Labels for this K
-                labels = _labels_for_k(Z, K)
-                labels = _relabel_stable(labels)
-
-                # Metrics for this run (without stability)
-                run_metrics, Pkc, members = compute_metrics_for_labels(
-                    assays=assays_boot, labels=labels, P_kw=P_kw, Q_kw=Q,
-                    top_n_words=args.top_n_words, cluster_mod=cluster_mod,
+        # If tau is impossible for this repeat (no pair meets |r| >= tau), skip all K for this repeat
+        if args.corr_threshold is not None:
+            tau = float(args.corr_threshold)
+            t_allowed = 1.0 - tau
+            d_min = float(np.min(D_condensed)) if D_condensed.size else float("inf")
+            if (not np.isfinite(d_min)) or d_min > t_allowed + 1e-12:
+                logging.info(
+                    "Skipping repeat r=%d: unattainable corr_threshold τ=%.3f "
+                    "(d_min=%.3f > 1-τ=%.3f; max|r|<τ)", r, tau, d_min, t_allowed
                 )
-                run_metrics.k = K; run_metrics.repeat = r
-                metrics_runs.append(run_metrics)
-                Pkc_runs.append(Pkc)
-                label_runs.append(labels)
-            except ValueError as e:
-                # logging.warning("Skipping repeat %d for K=%d: %s", r, K, e)
                 continue
 
-        # If every repeat failed threshold, skip this K
+        # Linkage for this repeat
+        Z = linkage(D_condensed, method=args.linkage, optimal_ordering=True)
+
+        # Evaluate all Ks on the same dendrogram
+        for K in K_list:
+            # Enforce corr_threshold per K on this repeat (reject this (r,K) only)
+            if args.corr_threshold is not None:
+                t_k = _threshold_for_k(Z, n_leaves=len(assays_boot), k=K)
+                t_allowed = 1.0 - float(args.corr_threshold)
+                if t_k > t_allowed + 1e-12:
+                    logging.debug(
+                        "repeat=%d: K=%d violates τ=%.3f (t_K=%.3f > 1-τ=%.3f); skipping (r,K).",
+                        r, K, args.corr_threshold, t_k, t_allowed
+                    )
+                    continue
+
+            # Labels and metrics for this (r,K)
+            labels = _labels_for_k(Z, K)
+            labels = _relabel_stable(labels)
+            run_metrics, Pkc, members = compute_metrics_for_labels(
+                assays=assays_boot, labels=labels, P_kw=P_kw, Q_kw=Q,
+                top_n_words=args.top_n_words, cluster_mod=cluster_mod,
+            )
+            run_metrics.k = K; run_metrics.repeat = r
+
+            per_k_data[K]["metrics_runs"].append(run_metrics)
+            per_k_data[K]["Pkc_runs"].append(Pkc)
+            per_k_data[K]["label_runs"].append(labels)
+
+            per_run_rows.append({
+                "K": K, "repeat": r,
+                "RE": run_metrics.re_mean, "Sharp": run_metrics.sharp_mean,
+                "Sharp_frac": run_metrics.sharp_frac, "Frag_max": run_metrics.frag_max
+            })
+
+    # Summarize per-K after all repeats
+    def agg(vals: List[float]) -> Tuple[float, float]:
+        arr = np.array(vals, dtype=float)
+        mean = float(np.mean(arr)) if arr.size else float("nan")
+        se = float(np.std(arr, ddof=1) / math.sqrt(max(len(arr), 1))) if len(arr) > 1 else 0.0
+        return mean, se
+
+    for K in K_list:
+        Kdata = per_k_data[K]
+        metrics_runs = Kdata["metrics_runs"]
         if not metrics_runs:
-            logging.warning("Skipping K=%d: all %d repeats violated --corr_threshold.", K, args.repeats)
+            logging.warning("Skipping K=%d: no repeats passed --corr_threshold.", K)
             continue
 
-        # Stability across repeats (pairwise averaged)
-        cos_sims = []
-        aris = []
-        nmis = []
+        # Stability across repeats (pairwise averaged) for this K
+        Pkc_runs = Kdata["Pkc_runs"]
+        label_runs = Kdata["label_runs"]
+        cos_sims, aris, nmis = [], [], []
         for i in range(len(Pkc_runs)):
             for j in range(i + 1, len(Pkc_runs)):
                 cos_sims.append(_cosine_sim(Pkc_runs[i], Pkc_runs[j]))
@@ -465,36 +478,21 @@ def main():
         ari = float(np.mean(aris)) if aris else None
         nmi = float(np.mean(nmis)) if nmis else None
 
-        # Aggregate per-K means and SEs
-        def agg(vals: List[float]) -> Tuple[float, float]:
-            arr = np.array(vals, dtype=float)
-            mean = float(np.mean(arr))
-            se = float(np.std(arr, ddof=1) / math.sqrt(max(len(arr), 1))) if len(arr) > 1 else 0.0
-            return mean, se
-
         re_mean, re_se = agg([m.re_mean for m in metrics_runs])
         sharp_mean, sharp_se = agg([m.sharp_mean for m in metrics_runs])
         sharp_frac, sharp_frac_se = agg([m.sharp_frac for m in metrics_runs])
         frag_max, frag_se = agg([m.frag_max for m in metrics_runs])
 
-        row_k = {
+        per_k_rows.append({
             "K": K,
             "RE_mean": re_mean, "RE_se": re_se,
             "Sharp_mean": sharp_mean, "Sharp_se": sharp_se,
             "Sharp_frac": sharp_frac, "Sharp_frac_se": sharp_frac_se,
             "Frag_max": frag_max, "Frag_se": frag_se,
             "Stab_cos": stab_cos, "ARI": ari, "NMI": nmi,
-        }
-        per_k_rows.append(row_k)
+        })
 
-        for m in metrics_runs:
-            per_run_rows.append({
-                "K": K, "repeat": m.repeat,
-                "RE": m.re_mean, "Sharp": m.sharp_mean, "Sharp_frac": m.sharp_frac,
-                "Frag_max": m.frag_max
-            })
-
-        # Optionally emit P(k|c) matrices
+        # Optionally emit a representative P(k|c) for this K
         if args.emit_perk:
             pd.DataFrame(Pkc_runs[0], columns=P_kw.columns).to_csv(outdir / f"Pkc_K{K:03d}_run0.csv", index=False)
 
