@@ -308,7 +308,7 @@ def collect_metrics_over_repeats(
     rng = np.random.RandomState(args.random_seed)
     per_run_rows: List[Dict] = []
     per_k_rows: List[Dict] = []
-    per_k_data = {K: {"Pkc_runs": [], "label_runs": [], "metrics_runs": []} for K in K_list}
+    per_k_data = {K: {"Pkc_runs": [], "label_runs": [], "metrics_runs": [], "success_count": 0} for K in K_list}
 
     for r in tqdm(range(args.repeats), desc="Repeats", unit="r"):
         frac = max(min(args.bootstrap_frac, 1.0), 0.05)
@@ -360,6 +360,15 @@ def collect_metrics_over_repeats(
             run_metrics.k = K
             run_metrics.repeat = r
 
+            # Per-run success: meets per-run criteria (stability is per-K, so not checked here)
+            pass_run = (
+                (run_metrics.sharp_mean >= args.sharpness_threshold) and
+                (run_metrics.sharp_frac >= args.sharpness_frac) and
+                (run_metrics.frag_max  <= args.frag_threshold)
+            )
+            if pass_run:
+                per_k_data[K]["success_count"] += 1
+
             per_k_data[K]["metrics_runs"].append(run_metrics)
             per_k_data[K]["Pkc_runs"].append(Pkc)
             per_k_data[K]["label_runs"].append(labels)
@@ -367,7 +376,8 @@ def collect_metrics_over_repeats(
             per_run_rows.append({
                 "K": K, "repeat": r,
                 "RE": run_metrics.re_mean, "Sharp": run_metrics.sharp_mean,
-                "Sharp_frac": run_metrics.sharp_frac, "Frag_max": run_metrics.frag_max
+                "Sharp_frac": run_metrics.sharp_frac, "Frag_max": run_metrics.frag_max,
+                "Pass": int(pass_run)
             })
 
     # Summarize per-K after all repeats
@@ -382,6 +392,14 @@ def collect_metrics_over_repeats(
         metrics_runs = Kdata["metrics_runs"]
         if not metrics_runs:
             logging.warning("Skipping K=%d: no repeats passed --corr_threshold.", K)
+            continue
+
+        # Compute success stats (denominator = configured repeats)
+        successes = int(Kdata["success_count"])
+        success_rate = successes / float(max(args.repeats, 1))
+        if success_rate < args.min_success_rate:
+            logging.warning("Skipping K=%d: success_rate=%.3f < min_success_rate=%.3f (successes=%d of %d).",
+                            K, success_rate, args.min_success_rate, successes, args.repeats)
             continue
 
         # Stability across repeats (pairwise averaged) for this K
@@ -409,6 +427,7 @@ def collect_metrics_over_repeats(
             "Sharp_frac": sharp_frac, "Sharp_frac_se": sharp_frac_se,
             "Frag_max": frag_max, "Frag_se": frag_se,
             "Stab_cos": stab_cos, "ARI": ari, "NMI": nmi,
+            "Successes": successes, "Success_rate": success_rate,
         })
 
         # Optional representative P(k|c) emission remains the caller's choice
@@ -469,6 +488,8 @@ def main():
     crit.add_argument("--frag_threshold", type=float, default=2.5, help="Max allowed NE_k (inverse HHI).")
     crit.add_argument("--stab_threshold", type=float, default=0.9, help="Min cosine stability across repeats.")
     crit.add_argument("--one_se", action="store_true", help="Apply one-standard-error rule on RE(K).")
+    crit.add_argument("--min_success_rate", type=float, default=0.05,
+                  help="Exclude K with fewer than this fraction of repeats passing per-run criteria (default: 0.05).")
 
     bp = ap.add_argument_group("build_posteriors passthrough (optional)")
     bp.add_argument("--build_posteriors", action="store_true",
@@ -559,10 +580,25 @@ def main():
     # Choose K using rules
     chosen_k, reason = choose_k_from_metrics(per_k_df, args)
 
+    # Count successes/failures for the chosen K (treat skipped repeats as failures)
+    runs_ck = per_run_df[per_run_df["K"] == chosen_k].copy()
+    if "Pass" in runs_ck.columns:
+        successes = int(runs_ck["Pass"].sum())
+    else:
+        # Derive per-run pass from thresholds if Pass column isn't present
+        successes = int(((runs_ck["Sharp"] >= args.sharpness_threshold) &
+                        (runs_ck["Sharp_frac"] >= args.sharpness_frac) &
+                        (runs_ck["Frag_max"] <= args.frag_threshold)).sum())
+    failures = int(max(args.repeats, 0) - successes)
+    success_rate = (successes / float(max(args.repeats, 1)))
+
     with open(Path(args.outdir) / "chosen_k.json", "w", encoding="utf-8") as f:
         json.dump({
             "chosen_k": chosen_k,
             "reason": reason,
+            "successes": successes,
+            "failures": failures,
+            "success_rate": success_rate,
             "criteria": {
                 "sharpness_threshold": args.sharpness_threshold,
                 "sharpness_frac": args.sharpness_frac,
@@ -571,6 +607,7 @@ def main():
                 "one_se": args.one_se,
             }
         }, f, indent=2, sort_keys=True)
+
 
     print(f"Chosen K = {chosen_k} ({reason}); metrics written to {Path(args.outdir) / 'choose_k_metrics.csv'}")
 
