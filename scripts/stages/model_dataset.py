@@ -18,7 +18,7 @@ from sklearn.feature_selection import SelectKBest, mutual_info_classif
 import sys
 sys.path.append('./')  # so utility scripts can be found
 from scripts.utils.helpers import (
-    z_scale_df,
+    zscore_columns,
     get_linear_model,
     get_descriptors,
     compute_vifs,
@@ -26,110 +26,9 @@ from scripts.utils.helpers import (
     remove_high_vif_descriptors,
     kmeans_clustering,
     # Gaussian_mixture_clustering,
-    get_endpoint_series,
+    process_dataset_endpoint,
+    build_activity_matrix_filled_from_inchis,
 )
-
-
-def characterize_descriptors():
-    # Convert the 'title' column to RDKit Mol objects
-    mol_list = [AllChem.AddHs(AllChem.MolFromInchi(s)) for s in tqdm(activity_df.index, desc="Converting InChIs to RDKit Mol objects")]
-
-    # Calculate descriptors for each molecule
-    descriptor_parquet = cachedir / 'descriptors.parquet'
-    use_cache = False
-    if descriptor_parquet.exists() and use_cache:
-        print(f"Loading existing descriptors from {descriptor_parquet}")
-        descriptor_df = pd.read_parquet(descriptor_parquet)
-    else:
-        descriptor_vectors = [get_descriptors(
-            mol,
-            use_phthalate_set=False,
-            use_general_set=True,
-            # use_vectors=True,
-        ) for mol in tqdm(mol_list, desc="Calculating descriptors")]
-        descriptor_df = pd.DataFrame(descriptor_vectors, index=activity_df.index)
-        descriptor_df.to_parquet(descriptor_parquet)
-
-    # Data preprocessing: scale the descriptors
-    X = z_scale_df(descriptor_df)
-    # Y = z_scale_df(activity_df)
-
-    X = remove_high_vif_descriptors(X, vif_threshold=10)
-
-    # Compute variance inflation factors (VIFs) to check for multicollinearity
-    vif_table = compute_vifs(X)
-    print("VIF Table:")
-    print(vif_table)
-
-    for descriptor in vif_table['descriptor']:
-        if vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0] > 10:
-            print(f"Warning: High VIF detected for descriptor '{descriptor}' (VIF={vif_table.loc[vif_table['descriptor'] == descriptor, 'VIF'].values[0]}). Consider removing it.")
-
-# # SECTION: Make a predictive model for EADB endpoints
-# eadb = pd.read_parquet(cachedir / 'eadb.parquet')
-
-# log_rba = get_endpoint_series(eadb, 'logRBA', sentinel_threshold=-10)
-
-def x_in_range(x, values):
-    """
-    Check if x is within the interquartile range of values.
-    """
-    q_low  = values.quantile(0.25).values
-    q_high = values.quantile(0.75).values
-    return q_low <= x <= q_high
-
-def process_dataset_endpoint(dataset: pd.DataFrame, endpoint: str):
-    """
-    Process a specific EADB endpoint, cleaning and preparing the data for analysis.
-    
-    Args:
-        endpoint (str): The name of the endpoint to process.
-        
-    Returns:
-        pd.Series: Cleaned and processed values for the specified endpoint.
-    """
-
-    # Convert to pIC50, pKi, etc. if applicable
-    if endpoint in [
-        'Ki',
-        'IC50',
-        # 'INH',
-        # 'ED50',
-        'GI50',
-        # 'Antagonism',
-        # 'Agonism',
-        'EC50',
-        'Kd',
-        'Ka',
-        'IC30',
-        'REC10'
-    ]:
-        p_conversion = True
-    else:
-        p_conversion = False
-    adj_endpoint = f"p{endpoint}" if p_conversion else endpoint
-
-    # filter out sentinel values
-    if endpoint in ['logRBA', 'logRA', 'logRE', 'logRP', 'logRPE',]:
-        sentinel_threshold = -100
-    elif endpoint in ['Ki']:
-        sentinel_threshold = -6
-    elif endpoint in ['INH', 'Antagonism', 'Agonism',]:
-        sentinel_threshold = 0
-    else:
-        sentinel_threshold = None
-
-    vals = get_endpoint_series(dataset, endpoint, p_conversion=p_conversion, sentinel_threshold=sentinel_threshold)
-
-    # get threhold values for conversion to binary
-    if p_conversion and x_in_range(0, vals):
-        threhold = 0
-    elif (not p_conversion) and x_in_range(50, vals):
-        threhold = 50
-    else:
-        threhold = vals.median()
-
-    return vals, adj_endpoint, threhold
 
 """ EADB endpoints for reference:
 array(['logRBA', 'logRA', 'logRE', 'logRPP', 'logRP', 'Ki', 'IC50', 'INH',
@@ -142,7 +41,7 @@ def transform_X(X, transform_type: str = ''):
     if transform_type == '':
         X_trans = X
     elif transform_type == 'z_scale':
-        X_trans = z_scale_df(X)
+        X_trans = zscore_columns(X)
     elif transform_type == 'binary':
         X_trans = (X > 0.5).astype(int)
     else:
@@ -232,9 +131,10 @@ def get_decision_tree_model_feature_selection(
     y_binary: pd.Series,
     *,
     transform_type='',
+    k: int | str = 'all',
 ):
     pipe = Pipeline([
-        ("filter_mi", SelectKBest(mutual_info_classif, k=154)),  # tune k
+        ("filter_mi", SelectKBest(mutual_info_classif, k=k)),  # tune k
         ("clf", DecisionTreeClassifier(random_state=0)),
     ])
 
@@ -269,7 +169,7 @@ def get_random_forest_regressor_feature_selection(
     y: pd.Series,
     *,
     transform_type='',
-    k=154,  # number of top features to keep
+    k: int | str = 'all',  # number of top features to keep
     n_estimators=200,
     max_depth=None,
 ):
@@ -342,7 +242,7 @@ def get_xgb_classifier_feature_selection(
     y_binary: pd.Series,
     *,
     transform_type: str = '',
-    k: int | None = None,
+    k: int | str = 'all',
     n_iter: int = 30,
     random_state: int = 0,
     model_save_path: Path | None = None,
@@ -374,9 +274,6 @@ def get_xgb_classifier_feature_selection(
 
     X_trans = transform_X(X, transform_type)
 
-    if k is None:
-        k = X.shape[1]  # keep all features if k is not specified
-
     # ---- base pipeline ----
     base_pipe = Pipeline([
         ("filter_mi", SelectKBest(mutual_info_classif, k=k)),
@@ -392,7 +289,7 @@ def get_xgb_classifier_feature_selection(
 
     # ---- hyper-parameter space (lists work fine for RandomizedSearchCV) ----
     param_dist = {
-        'clf__n_estimators':       [300, 500, 800, 1000],
+        'clf__n_estimators':      [200, 300, 500, 800, 1000],
         'clf__max_depth':         [3, 4, 5, 6, 7],
         'clf__learning_rate':     [0.01, 0.03, 0.05, 0.1],
         'clf__subsample':         [0.7, 0.8, 0.9, 1.0],
@@ -426,6 +323,7 @@ def get_xgb_classifier_feature_selection(
                 scoring=['accuracy', 'roc_auc'],
                 return_estimator=True,
                 n_jobs=-1,
+                verbose=1,
             )
         except ValueError as e:
             print(f"Error during cross-validation: {e}")
@@ -463,12 +361,18 @@ Mean CV ROC-AUC: {mean_auc:.3f} ± {std_err_auc:.3f} (SE)
 
     return best_model, metrics, imp_series
 
-def write_xgb_classifier_feature_selection(cachedir: Path, activity_df: pd.DataFrame, dataset: pd.DataFrame):
+def write_xgb_classifier_feature_selection(
+        *,
+        outdir: Path,
+        activity_df: pd.DataFrame,
+        dataset: pd.DataFrame,
+        k: int | str = 'all',
+):
     """
     Run XGB classifier feature selection for each EADB endpoint and write results to a file.
     """
     # Write results to a text file
-    with open(cachedir / 'xgb_classifier_feature_selection.txt', 'w') as f:
+    with open(outdir / 'xgb_classifier_feature_selection.txt', 'w') as f:
         for endpoint in dataset.EndpointName.unique():
             vals, adj_endpoint, threshold = process_dataset_endpoint(dataset, endpoint)
             
@@ -478,14 +382,16 @@ def write_xgb_classifier_feature_selection(cachedir: Path, activity_df: pd.DataF
             y_binary = (vals.loc[index_intersection] > threshold).squeeze() # binary target based on threshold
 
             if endpoint == 'logRBA':
-                model_save_path = cachedir / 'xgb_classifier_logRBA_model.json'
+                model_save_path = outdir / 'xgb_classifier_logRBA_model.json'
             else:
                 model_save_path = None
+                continue  # only process logRBA for now
 
             _, metrics, imp_series = get_xgb_classifier_feature_selection(
                 X,
                 y_binary,
                 model_save_path=model_save_path,
+                k=k,
             )
             # handle errors in feature selection
             if metrics is None:
@@ -514,32 +420,60 @@ if __name__ == "__main__":
     # get_random_forest_regressor_feature_selection(transform_type='binary')
 
     parser = argparse.ArgumentParser(description="Run dataset characterization.")
-    parser.add_argument('--dataset', type=str, required=True,
+    parser.add_argument('--dataset', type=str, required=True, choices=['eadb', 'ekdb', 'combined',],
                         help="Name of the database.")
     parser.add_argument('--transform', type=str, default='', choices=['', 'z_scale', 'binary'],
                         help="Type of transformation to apply to the feature matrix.")
-    parser.add_argument('--k', type=int, default=154, help="Number of top features to keep for feature selection.")
-    parser.add_argument('--n_estimators', type=int, default=200,
-                        help="Number of trees in the Random Forest.")
+    parser.add_argument('--k', type=str, default=None, help="Number of top features to keep for feature selection.")
+    # parser.add_argument('--n_estimators', type=int, default=200,
+    #                     help="Number of trees in the Random Forest.")
     parser.add_argument('--max_depth', type=int, default=None, help="Maximum depth of the trees.")
     parser.add_argument('--n_iter', type=int, default=30, help="Number of iterations for hyperparameter search.")
     parser.add_argument('--random_state', type=int, default=0, help="Random seed for reproducibility.")
     parser.add_argument('--endpoint', type=str, default=None,
                         help="Specific EADB endpoint to process (if provided).")
+    parser.add_argument('--build_activity', action='store_true',
+                        help="Build the activity matrix from scratch instead of using cached version.")
     
     args = parser.parse_args()
-
-    # Read the activity matrix from the cache
-    cachedir = Path('cache') / args.dataset
-    activity_df = pd.read_parquet(cachedir / 'activity_matrix_filled.parquet')
 
     # Read the specified dataset
     resourcedir = Path('resources')
     dataset_parquet = resourcedir / f'{args.dataset}_full.parquet'
     dataset = pd.read_parquet(dataset_parquet)
 
+    cachedir = Path('cache')
+    outdir = cachedir / args.dataset
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # Read the activity matrix from the cache
+    activity_path = outdir / 'activity_matrix_filled.parquet'
+    if activity_path.exists() and not args.build_activity:
+        print(f"Loading cached activity matrix from {activity_path}...")
+        # activity_df = pd.read_parquet(cachedir / 'entity_similarity/activity_matrix_filled.parquet')
+        activity_df = pd.read_parquet(activity_path)
+    else:
+        print("Building activity matrix from scratch...")
+        activity_df = build_activity_matrix_filled_from_inchis(
+            list(set(dataset.inchi)),
+        )
+        activity_df.to_parquet(activity_path)    
+
+    if args.transform == 'z_scale':
+        activity_df = zscore_columns(activity_df)
+    elif args.transform == 'binary':
+        activity_df = (activity_df > 0.5).astype(int)
+
+    
+
+    if (args.k is None) or (args.k == 'None') or (args.k == 'all'):
+        k = 'all'
+    else:
+        k = int(args.k)
+
     write_xgb_classifier_feature_selection(
-        cachedir=cachedir,
+        outdir=outdir,
         activity_df=activity_df,
         dataset=dataset,
+        k=k,
     )

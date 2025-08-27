@@ -454,6 +454,7 @@ def get_descriptors(
     return feats
 
 def z_scale_df(df: pd.DataFrame) -> pd.DataFrame:
+    # DEPRECATED: use zscore_columns instead
     """Z-score normalize the dataframe by columns."""
     return (df - df.mean())/df.std()
 
@@ -1178,6 +1179,14 @@ def general_clustering(pipe, X, y, *, print_tag='', var_name='logRBA', plot_clus
 def comma_remove(s):
     return s.replace(',', '')
 
+def x_in_range(x, values):
+    """
+    Check if x is within the interquartile range of values.
+    """
+    q_low  = values.quantile(0.25).values
+    q_high = values.quantile(0.75).values
+    return q_low <= x <= q_high
+
 def get_endpoint_series(df, endpoint, *, p_conversion = False, sentinel_threshold=-10):
     # filter for desired endpoint
     endpoint_series = df.loc[df['EndpointName'] == endpoint, ['inchi', 'EndpointValue']]
@@ -1196,13 +1205,74 @@ def get_endpoint_series(df, endpoint, *, p_conversion = False, sentinel_threshol
     endpoint_series = endpoint_series.replace([np.inf, -np.inf], np.nan)
     # set sentinel values to NaN
     if sentinel_threshold is not None:
-        endpoint_series[endpoint_series < sentinel_threshold] = np.nan
+        endpoint_series[endpoint_series <= sentinel_threshold] = np.nan
     # drop rows with NaN in endpoint value
     endpoint_series = endpoint_series.dropna()
     # for duplicate InChIs, take the mean of endpoint values
     endpoint_series = endpoint_series.groupby(endpoint_series.index).mean()
 
     return endpoint_series
+
+def process_dataset_endpoint(
+        dataset: pd.DataFrame,
+        endpoint: str,
+        *,
+        p_conversion: bool | None = None,  # if None, auto-detect based on endpoint name
+):
+    """
+    Process a specific EADB endpoint, cleaning and preparing the data for analysis.
+    
+    Args:
+        endpoint (str): The name of the endpoint to process.
+        
+    Returns:
+        pd.Series: Cleaned and processed values for the specified endpoint.
+    """
+    if p_conversion is None:
+        # Convert to pIC50, pKi, etc. if applicable
+        if endpoint in [
+            'Ki',
+            'IC50',
+            # 'INH',
+            # 'ED50',
+            'GI50',
+            # 'Antagonism',
+            # 'Agonism',
+            'EC50',
+            'Kd',
+            'Ka',
+            'IC30',
+            'REC10'
+        ]:
+            p_conversion = True
+        else:
+            p_conversion = False
+
+    adj_endpoint = f"p{endpoint}" if p_conversion else endpoint
+    # regularize capitalization
+    adj_endpoint = adj_endpoint.replace('Log', 'log')
+
+    # filter out sentinel values
+    if adj_endpoint in ['logRBA', 'logRA', 'logRE', 'logRP', 'logRPE',]:
+        sentinel_threshold = -100
+    elif adj_endpoint in ['Ki', 'pKi']:
+        sentinel_threshold = -6
+    elif adj_endpoint in ['INH', 'Antagonism', 'Agonism',]:
+        sentinel_threshold = 0
+    else:
+        sentinel_threshold = None
+
+    vals = get_endpoint_series(dataset, endpoint, p_conversion=p_conversion, sentinel_threshold=sentinel_threshold)
+
+    # get threshold values for conversion to binary
+    if p_conversion and x_in_range(0, vals):
+        threshold = 0
+    elif (not p_conversion) and x_in_range(50, vals):
+        threshold = 50
+    else:
+        threshold = vals.median()
+
+    return vals, adj_endpoint, threshold
 
 # ----------------------------- PCA diagnostics ----------------------------- #
 
@@ -1398,3 +1468,94 @@ def get_assay_strength(fullpred: List[Dict], category_labels: List[str] = ['endo
                 break
 
     return assay_strength
+
+
+def build_activity_matrix_filled_from_inchis(
+    inchis,
+    *,
+    assay_csv: str | Path = "resources/assay_strength.csv",
+    sqlite_path: str | Path = "brick/predictions.sqlite",
+    table: str = "predictions"
+) -> pd.DataFrame:
+    """
+    Return a DataFrame of shape (len(inchis), n_assays) with mean positive_prediction
+    per (inchi, assay_title). Missing entries are filled with 0.0.
+
+    This uses the 'categories' method for the assay list: it loads titles and tokens
+    from resources/assay_strength.csv, deduplicates on 'title', then queries the
+    SQLite database the same way as the original code:
+        SELECT inchi, property_token, positive_prediction
+        FROM predictions
+        WHERE property_token IN (...)
+
+    Parameters
+    ----------
+    inchis : list[str]
+        InChIs to include as rows (order preserved).
+    assay_csv : str | Path
+        Path to resources/assay_strength.csv (must contain at least 'title' and 'token').
+    sqlite_path : str | Path
+        Path to brick/predictions.sqlite containing table with the needed columns.
+    table : str
+        Table name in the SQLite database (default: 'predictions').
+
+    Returns
+    -------
+    pandas.DataFrame
+        Index = input InChIs (preserved order), columns = assay titles, dtype=float.
+        All NaNs are filled with 0.0.
+    """
+    import sqlite3
+
+    # 1) Load assays via the "categories" pathway (assay_strength.csv)
+    assays = pd.read_csv(assay_csv)
+    if not {"title", "token"}.issubset(assays.columns):
+        missing = {"title", "token"} - set(assays.columns)
+        raise ValueError(f"Assay file is missing required columns: {sorted(missing)}")
+
+    assays = assays.drop_duplicates("title").copy()
+    assays["token"] = assays["token"].astype(int)
+    tokens = assays["token"].dropna().astype(int).tolist()
+    if len(tokens) == 0:
+        raise ValueError("No assay tokens found in assay_strength.csv after deduplication on 'title'.")
+
+    # 2) Query SQLite the same way as the source file: property_token IN (tokens)
+    token_clause = ",".join(str(t) for t in tokens)
+    sql = (
+        f"SELECT inchi, property_token, positive_prediction "
+        f"FROM {table} WHERE property_token IN ({token_clause})"
+    )
+    with sqlite3.connect(sqlite_path) as conn:
+        preds = pd.read_sql(sql, conn)
+
+    if preds.empty:
+        # Build an all-zero matrix with requested InChIs and available assay titles
+        cols = assays["title"].unique()
+        return pd.DataFrame(0.0, index=list(dict.fromkeys(inchis)), columns=cols)
+
+    # 3) Keep only requested InChIs; map tokens -> titles; average duplicates
+    preds["property_token"] = preds["property_token"].astype(int)
+    preds = preds[preds["inchi"].isin(inchis)].merge(
+        assays[["token", "title"]],
+        left_on="property_token",
+        right_on="token",
+        how="inner"
+    )
+
+    if preds.empty:
+        cols = assays["title"].unique()
+        return pd.DataFrame(0.0, index=list(dict.fromkeys(inchis)), columns=cols)
+
+    # 4) Mean over any duplicate (inchi, title) pairs
+    df = (
+        preds.groupby(["inchi", "title"], as_index=False)["positive_prediction"]
+        .mean()
+    )
+
+    # 5) Pivot to InChI x assay_title and fill missing with 0.0
+    mat = df.pivot(index="inchi", columns="title", values="positive_prediction")
+    # Preserve input order and include any InChIs with no predictions (rows of zeros)
+    mat = mat.reindex(list(dict.fromkeys(inchis)))
+    mat_filled = mat.fillna(0.0)
+
+    return mat_filled
