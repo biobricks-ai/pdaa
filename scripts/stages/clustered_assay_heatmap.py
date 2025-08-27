@@ -41,6 +41,7 @@ from scipy.cluster.hierarchy import linkage, fcluster, leaves_list
 from scipy.spatial.distance import squareform
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import NullLocator, NullFormatter
 import seaborn as sns
 from rdkit import Chem
 
@@ -197,7 +198,8 @@ def styled_heatmap(
         row_cluster=False,
         col_cluster=False,
         row_colors=row_colors,
-        xticklabels=True,
+        # xticklabels=True,
+        xticklabels=False,
         yticklabels=False,
         linecolor=linecolor,
         figsize=figsize,
@@ -226,7 +228,7 @@ def styled_heatmap(
     # Optionally show a placeholder dendrogram axis for consistent margins
     g.ax_col_dendrogram.set_visible(False)
 
-    g.ax_heatmap.set_xlabel(xlabel, color=fontcolor, fontsize=20)
+    g.ax_heatmap.set_xlabel(xlabel, color=fontcolor, fontsize=20, labelpad=15)
 
     # Also label the colorbar on the main heatmap collections
     cbar = g.ax_heatmap.collections[0].colorbar
@@ -294,7 +296,8 @@ def main():
     logging.info("Clustered %d assays into K=%d clusters.", len(assays), K)
 
     # 5) Aggregate activity by cluster
-    M, mapping_df = aggregate_activity_by_cluster(activity, assays, labels, agg=args.agg)
+    # M, mapping_df = aggregate_activity_by_cluster(activity, assays, labels, agg=args.agg)
+    M, mapping_df = aggregate_activity_by_cluster(Xz, assays, labels, agg=args.agg)
     M.to_parquet(outdir / "activity_by_cluster.parquet")
     logging.info("Aggregated matrix shape: %s x %s (chemicals x clusters).", M.shape[0], M.shape[1])
 
@@ -328,7 +331,7 @@ def main():
 
     # Y label and margins
     g.ax_heatmap.yaxis.set_label_position("left")
-    g.ax_heatmap.set_ylabel("Diester Phthalates", color="black", fontsize=20, labelpad=20)
+    g.ax_heatmap.set_ylabel("Diester Phthalates", color="black", fontsize=20, labelpad=15)
     g.ax_heatmap.yaxis.tick_left()
     g.figure.subplots_adjust(left=0.03, right=0.90, top=1.00, bottom=0.06)
 
@@ -357,13 +360,31 @@ def main():
         y = np.arange(len(x), dtype=float)
         valid = np.isfinite(x)
 
-        # single neutral color (mirrors 'color_by=None' path)
-        bar_color = "#ACACAD"
-        ax_bar.barh(y[valid], x[valid], color=bar_color)
+        # draw one stripe per row; height=1 fills a row and avoids sub-pixel rasterization
+        bars = ax_bar.barh(y, x, color="#ACACAD", height=1.0, linewidth=0, snap=True, antialiased=False, zorder=3)
+        # align to the heatmap rows after plotting
+        ax_bar.set_ylim(-0.5, len(x) - 0.5)
+        # plt.show()
 
-        # Make sure the axis range is sensible even if lots of zeros
-        max_x = float(np.nanmax(x)) if np.any(valid) else 0.0
-        ax_bar.set_xlim(left=0.0, right=(1.05 * max_x if max_x > 0.0 else 1.0))
+        # # single neutral color (mirrors 'color_by=None' path)
+        # bar_color = "#ACACAD"
+        # ax_bar.barh(y[valid], x[valid], color=bar_color)
+
+        # Include negatives (common with z-scored/centered data); autoscale when possible
+        if np.any(valid):
+            xmin = float(np.nanmin(x[valid]))
+            xmax = float(np.nanmax(x[valid]))
+            # Symmetric bounds if any negative values or when z-scaling is on
+            if xmin < 0.0 or args.z_scale:
+                bound = 1.05 * max(abs(xmin), abs(xmax), 1e-9)
+                ax_bar.set_xlim(-bound, bound)
+                print(f"Setting symmetric xlim to ±{bound:.3f}")
+            else:
+                ax_bar.set_xlim(0.0, 1.05 * xmax if xmax > 0.0 else 1.0)
+        else:
+            # Nothing finite; give a tiny symmetric window
+            ax_bar.set_xlim(-1.0, 1.0)
+
 
 
         # map chemical id (index) -> displayed row
@@ -394,27 +415,61 @@ def main():
             if not moved:
                 break
 
-        # annotate labels starting at each bar's tip
+        # ensure bar axis has final limits before placing labels
+        ax_bar.set_ylim(g.ax_heatmap.get_ylim())
+
+        # remove ALL y ticks/labels on the bar axis so nothing overlaps the colorbar label
+        ax_bar.set_yticks([])  # belt
+        ax_bar.tick_params(axis="y", which="both", left=False, right=False,
+                        labelleft=False, labelright=False)  # suspenders
+        ax_bar.yaxis.set_major_locator(NullLocator())
+        ax_bar.yaxis.set_minor_locator(NullLocator())
+        ax_bar.yaxis.set_major_formatter(NullFormatter())
+
+        # use sorted limits to handle inverted y-axes; clamp into [ylow+pad, yhigh-pad]
+        y0, y1 = ax_bar.get_ylim()
+        ylow, yhigh = (min(y0, y1), max(y0, y1))
+        pad_rows = 8.0
+
+        # also clamp x so labels stay inside the right bound
+        xmin, xmax = ax_bar.get_xlim()
+        xpad = 0.02 * (xmax - xmin)  # 2% gutter
+
         bar_tip_fraction = 0.25 if args.z_scale else 0.10
         x_offset = float(mean_activity.max()) * bar_tip_fraction
+
         for (pos, inchi, name), y_shift in zip(examples, shifts):
-            x = float(mean_activity.iloc[pos])
-            if np.isfinite(x):
-                ax_bar.annotate(
-                    name,
-                    xy=(x, pos),
-                    xytext=(x + x_offset, pos + y_shift),
-                    ha="left", va="center",
-                    fontsize=11, color="black",
-                    arrowprops=dict(arrowstyle="-", lw=0.6),
-                    clip_on=False,
-                )
+            xw = float(mean_activity.iloc[pos])
+            x_adj = max(xw, 0)
+            if not np.isfinite(xw):
+                continue
 
+            # y: clamp within visible band
+            y_target = pos + y_shift
+            if y_target < ylow + pad_rows:
+                y_target = ylow + pad_rows
+            elif y_target > yhigh - pad_rows:
+                y_target = yhigh - pad_rows
 
-        # match heatmap rows; label axis
-        ax_bar.set_ylim(g.ax_heatmap.get_ylim())
-        ax_bar.set_xlabel("MAV", fontsize=20)
-        ax_bar.set_yticks([])
+            # x: keep label inside the axis while still to the right of the bar tip
+            # x_text = min(max(xw + x_offset, xmin + xpad), xmax - xpad)
+            x_text = min(max(x_adj + x_offset, xmin + xpad), xmax - xpad)
+
+            ax_bar.annotate(
+                name,
+                xy=(xw, pos),
+                xytext=(x_text, y_target),
+                ha="left", va="center",
+                fontsize=11, color="black",
+                arrowprops=dict(
+                    arrowstyle="-",
+                    lw=0.6,
+                    color="black",
+                ),
+                clip_on=True,              # safe since we now keep text inside
+                annotation_clip=True,
+            )
+
 
     except Exception as e:
         logging.warning("Skipping example labels side bar: %s", e)
