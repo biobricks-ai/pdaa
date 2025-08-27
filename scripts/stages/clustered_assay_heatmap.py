@@ -426,10 +426,11 @@ def main():
         ax_bar.yaxis.set_minor_locator(NullLocator())
         ax_bar.yaxis.set_major_formatter(NullFormatter())
 
-        # use sorted limits to handle inverted y-axes; clamp into [ylow+pad, yhigh-pad]
+        # use sorted limits to handle inverted y-axes; compute interior band
         y0, y1 = ax_bar.get_ylim()
         ylow, yhigh = (min(y0, y1), max(y0, y1))
         pad_rows = 8.0
+        low, high = ylow + pad_rows, yhigh - pad_rows
 
         # also clamp x so labels stay inside the right bound
         xmin, xmax = ax_bar.get_xlim()
@@ -438,37 +439,46 @@ def main():
         bar_tip_fraction = 0.25 if args.z_scale else 0.10
         x_offset = float(mean_activity.max()) * bar_tip_fraction
 
-        for (pos, inchi, name), y_shift in zip(examples, shifts):
+        # --- bounded spreading to avoid crowding at the edges ---
+        y_desired = base_rows + shifts
+        y_targets = np.clip(y_desired, low, high)
+
+        # enforce min_sep monotonically from top to bottom
+        for i in range(1, len(y_targets)):
+            y_targets[i] = max(y_targets[i], y_targets[i-1] + min_sep)
+
+        # if we overflow the top bound, shift block down; if still too tall, compress
+        overflow = y_targets[-1] - high if len(y_targets) else 0.0
+        if overflow > 0.0:
+            y_targets -= overflow
+            underflow = low - y_targets[0]
+            if underflow > 0.0:
+                span_needed = y_targets[-1] - y_targets[0]
+                span_avail  = high - low
+                if span_needed > 0.0:
+                    scale = span_avail / span_needed
+                    y_targets = low + (y_targets - y_targets[0]) * scale
+                else:
+                    # degenerate case: stack collapsed; spread evenly
+                    y_targets = np.linspace(low, high, len(y_targets))
+
+        # --- annotate using the bounded y_targets ---
+        for (pos, inchi, name), y_target in zip(examples, y_targets):
             xw = float(mean_activity.iloc[pos])
-            x_adj = max(xw, 0)
             if not np.isfinite(xw):
                 continue
-
-            # y: clamp within visible band
-            y_target = pos + y_shift
-            if y_target < ylow + pad_rows:
-                y_target = ylow + pad_rows
-            elif y_target > yhigh - pad_rows:
-                y_target = yhigh - pad_rows
-
-            # x: keep label inside the axis while still to the right of the bar tip
-            # x_text = min(max(xw + x_offset, xmin + xpad), xmax - xpad)
-            x_text = min(max(x_adj + x_offset, xmin + xpad), xmax - xpad)
-
+            x_text = min(max(xw + x_offset, xmin + xpad), xmax - xpad)
             ax_bar.annotate(
                 name,
                 xy=(xw, pos),
                 xytext=(x_text, y_target),
                 ha="left", va="center",
                 fontsize=11, color="black",
-                arrowprops=dict(
-                    arrowstyle="-",
-                    lw=0.6,
-                    color="black",
-                ),
-                clip_on=True,              # safe since we now keep text inside
+                arrowprops=dict(arrowstyle="-", lw=0.6, color="black"),
+                clip_on=True,
                 annotation_clip=True,
             )
+
 
 
     except Exception as e:

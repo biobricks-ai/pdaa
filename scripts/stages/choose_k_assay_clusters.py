@@ -74,6 +74,7 @@ from tqdm import tqdm
 # Optional imports from your repo
 sys.path.append("./")
 from scripts.utils.helpers import zscore_columns
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Try to import the clustering helpers to reuse WordCloud behavior for p_c(w)
 def _import_cluster_module(path_hint: Optional[str] = None):
@@ -310,7 +311,7 @@ def collect_metrics_over_repeats(
     per_k_rows: List[Dict] = []
     per_k_data = {K: {"Pkc_runs": [], "label_runs": [], "metrics_runs": [], "success_count": 0} for K in K_list}
 
-    for r in tqdm(range(args.repeats), desc="Repeats", unit="r"):
+    def run_repeat(r):
         frac = max(min(args.bootstrap_frac, 1.0), 0.05)
         n = Xz.shape[0]
         idx = rng.randint(0, n, size=max(2, int(round(frac * n))))
@@ -332,11 +333,12 @@ def collect_metrics_over_repeats(
                     "Skipping repeat r=%d: unattainable corr_threshold τ=%.3f "
                     "(d_min=%.3f > 1-τ=%.3f; max|r|<τ)", r, tau, d_min, t_allowed
                 )
-                continue
+                return []
 
         # Linkage for this repeat
         Z = linkage(D_condensed, method=args.linkage, optimal_ordering=True)
 
+        results = []
         # Evaluate all Ks on the same dendrogram
         for K in K_list:
             # Enforce corr_threshold per K on this repeat (reject this (r,K) only)
@@ -373,12 +375,88 @@ def collect_metrics_over_repeats(
             per_k_data[K]["Pkc_runs"].append(Pkc)
             per_k_data[K]["label_runs"].append(labels)
 
-            per_run_rows.append({
+            results.append({
                 "K": K, "repeat": r,
                 "RE": run_metrics.re_mean, "Sharp": run_metrics.sharp_mean,
                 "Sharp_frac": run_metrics.sharp_frac, "Frag_max": run_metrics.frag_max,
                 "Pass": int(pass_run)
             })
+        return results
+
+    with ThreadPoolExecutor() as executor:
+        with tqdm(total=args.repeats, desc="Repeats", unit="r") as pbar:
+            futures = [executor.submit(run_repeat, r) for r in range(args.repeats)]
+            for f in as_completed(futures):
+                per_run_rows.extend(f.result())
+                pbar.update(1)
+        # frac = max(min(args.bootstrap_frac, 1.0), 0.05)
+        # n = Xz.shape[0]
+        # idx = rng.randint(0, n, size=max(2, int(round(frac * n))))
+        # Xz_boot = Xz.iloc[idx, :]
+
+        # # Distances for this repeat
+        # if hasattr(cluster_mod, "assay_distance_matrix"):
+        #     _, D_condensed, assays_boot = cluster_mod.assay_distance_matrix(Xz_boot)
+        # else:
+        #     _, D_condensed, assays_boot = _assay_distance_matrix(Xz_boot)
+
+        # # If tau is impossible for this repeat, skip all K for this repeat
+        # if args.corr_threshold is not None:
+        #     tau = float(args.corr_threshold)
+        #     t_allowed = 1.0 - tau
+        #     d_min = float(np.min(D_condensed)) if D_condensed.size else float("inf")
+        #     if (not np.isfinite(d_min)) or d_min > t_allowed + 1e-12:
+        #         logging.info(
+        #             "Skipping repeat r=%d: unattainable corr_threshold τ=%.3f "
+        #             "(d_min=%.3f > 1-τ=%.3f; max|r|<τ)", r, tau, d_min, t_allowed
+        #         )
+        #         continue
+
+        # # Linkage for this repeat
+        # Z = linkage(D_condensed, method=args.linkage, optimal_ordering=True)
+
+        # # Evaluate all Ks on the same dendrogram
+        # for K in K_list:
+        #     # Enforce corr_threshold per K on this repeat (reject this (r,K) only)
+        #     if args.corr_threshold is not None:
+        #         t_k = _threshold_for_k(Z, n_leaves=len(assays_boot), k=K)
+        #         t_allowed = 1.0 - float(args.corr_threshold)
+        #         if t_k > t_allowed + 1e-12:
+        #             logging.debug(
+        #                 "repeat=%d: K=%d violates τ=%.3f (t_K=%.3f > 1-τ=%.3f); skipping (r,K).",
+        #                 r, K, args.corr_threshold, t_k, t_allowed
+        #             )
+        #             continue
+
+        #     # Labels and metrics for this (r,K)
+        #     labels = _labels_for_k(Z, K)
+        #     labels = _relabel_stable(labels)
+        #     run_metrics, Pkc, _members = compute_metrics_for_labels(
+        #         assays=assays_boot, labels=labels, P_kw=P_kw, Q_kw=Q,
+        #         top_n_words=args.top_n_words, cluster_mod=cluster_mod,
+        #     )
+        #     run_metrics.k = K
+        #     run_metrics.repeat = r
+
+        #     # Per-run success: meets per-run criteria (stability is per-K, so not checked here)
+        #     pass_run = (
+        #         (run_metrics.sharp_mean >= args.sharpness_threshold) and
+        #         (run_metrics.sharp_frac >= args.sharpness_frac) and
+        #         (run_metrics.frag_max  <= args.frag_threshold)
+        #     )
+        #     if pass_run:
+        #         per_k_data[K]["success_count"] += 1
+
+        #     per_k_data[K]["metrics_runs"].append(run_metrics)
+        #     per_k_data[K]["Pkc_runs"].append(Pkc)
+        #     per_k_data[K]["label_runs"].append(labels)
+
+        #     per_run_rows.append({
+        #         "K": K, "repeat": r,
+        #         "RE": run_metrics.re_mean, "Sharp": run_metrics.sharp_mean,
+        #         "Sharp_frac": run_metrics.sharp_frac, "Frag_max": run_metrics.frag_max,
+        #         "Pass": int(pass_run)
+        #     })
 
     # Summarize per-K after all repeats
     def agg(vals: List[float]) -> Tuple[float, float]:

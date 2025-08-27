@@ -791,6 +791,7 @@ def cluster_rows_and_make_heatmap(
     )    
 
     g.figure.savefig(cachedir / "phthalate_activity_heatmap.png", dpi=600)
+    print(f"Saved heatmap to {cachedir / 'phthalate_activity_heatmap.png'}")
     plt.close(g.figure)
 
     assay_activity_counts = phthalate_df.reset_index().groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
@@ -853,10 +854,14 @@ def plot_phthalate_activity_relationships(*, color_by='cluster', example_plot='l
 
     try:
         X = pd.read_parquet('cache/descriptors/descriptors.parquet')
+        # if the number of rows in X is less than the number of unique InChIs in df6, we need to re-extract the descriptors for those missing InChIs
+        if X.shape[0] != df6['inchi'].nunique():
+            raise FileNotFoundError
         df6[['MolWt', 'cLogP', 'RotB', 'BranchingRatio']] = X.loc[df6['inchi'], ['MolWt', 'cLogP', 'RotB', 'BranchingRatio']].values
 
         X = remove_high_vif_descriptors(X, vif_threshold=10)
         print(f"Loaded descriptors from cache: {X.shape[0]} molecules, {X.shape[1]} features")
+
     except FileNotFoundError:
         # Extract feature dicts for each molecule
         feats_list = []

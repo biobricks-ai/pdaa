@@ -1000,10 +1000,13 @@ if __name__ == "__main__":
     # Quick Pearson/Spearman heat-map
     rho = Pearson_correlation_heatmap(X, Y, draw_heatmap=args.heatmap)
 
-    # isolate the "Isomer" row to check if activities line up with chemical intuition
-    isomer_row = rho.loc['Isomer']
-    # save to a CSV file
-    isomer_row.to_csv(outdir / 'isomer_correlation.csv')
+    try:
+        # isolate the "Isomer" row to check if activities line up with chemical intuition
+        isomer_row = rho.loc['Isomer']
+        # save to a CSV file
+        isomer_row.to_csv(outdir / 'isomer_correlation.csv')
+    except KeyError:
+        print("No 'Isomer' descriptor found in the correlation matrix.")
 
     # TODO: PLS regression to find the most predictive descriptors
     rf = get_oob_score(X, Y)
