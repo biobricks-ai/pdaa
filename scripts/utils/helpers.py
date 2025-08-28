@@ -1559,3 +1559,10 @@ def build_activity_matrix_filled_from_inchis(
     mat_filled = mat.fillna(0.0)
 
     return mat_filled
+
+def get_example_phthalates_df():
+    example_phthalates_df = pd.read_csv("resources/example_phthalates.csv")
+    # shorten the names
+    example_phthalates_df['name'] = example_phthalates_df['name'].str.replace('Dimethyl ', '')
+
+    return example_phthalates_df

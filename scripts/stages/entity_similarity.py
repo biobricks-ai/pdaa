@@ -19,7 +19,12 @@ sys.path.append('./')
 import stages.utils.pdaa as pdaa
 import stages.utils.sparql as sparql
 from scripts.utils.helpers import (
-    clean_title, get_descriptors, is_phthalate, is_diester_phthalate, phthalate_matches
+    clean_title,
+    get_descriptors,
+    is_phthalate,
+    is_diester_phthalate,
+    phthalate_matches,
+    get_example_phthalates_df
 )
 
 resourcedir = pathlib.Path('resources')
@@ -117,9 +122,7 @@ cachedir = pathlib.Path('cache') / 'entity_similarity'
 cachedir.mkdir(parents=True, exist_ok=True)
 
 # region EXAMPLE PHTHALATES ====================================================================
-example_phthalates_df = pd.read_csv(resourcedir / 'example_phthalates.csv')
-# shorten the names
-example_phthalates_df['name'] = example_phthalates_df['name'].str.replace('Dimethyl ', '')
+example_phthalates_df = get_example_phthalates_df()
 example_phthalates_df.sort_values(by='name', inplace=True)
 
 example_phthalates = [Chem.MolFromSmiles(smiles) for smiles in example_phthalates_df['smiles']]
