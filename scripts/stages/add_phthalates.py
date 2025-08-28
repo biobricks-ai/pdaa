@@ -23,6 +23,7 @@ infile = Path("resources/example_phthalates.csv")  # Path to the input file with
 df = pd.read_csv(infile)
 smiles_list = df['smiles'].tolist()
 # Convert SMILES to InChI
-inchi_list = [smiles_to_inchi(smiles) for smiles in smiles_list]
+# inchi_list = [smiles_to_inchi(smiles) for smiles in smiles_list]
+inchi_list = df['inchi'].to_list()
 
 predict_all_properties_with_sqlite_cache(inchi_list)

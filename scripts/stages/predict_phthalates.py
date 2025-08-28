@@ -13,6 +13,13 @@ import sys
 sys.path.append('./')
 from scripts.utils.helpers import zscore_columns
 
+def mean_column(df: pd.DataFrame, col_title: str):
+    Z = zscore_columns(df)[0]
+    MZ = Z.mean(axis=1)
+    MZ.name = col_title
+
+    return MZ, Z
+
 cachedir = Path("cache")
 modeldir = cachedir / "combined"
 datadir = cachedir / "entity_similarity"
@@ -22,17 +29,26 @@ model = XGBClassifier()
 # Load the model from the JSON file
 model.load_model(modeldir / "xgb_classifier_logRBA_model.json")
 
-# load the phthalates data
-activity_matrix_filled = pd.read_parquet(
-    datadir / "activity_matrix_filled.parquet"
-)
-Z = zscore_columns(activity_matrix_filled)[0]
-MAV = Z.mean(axis=1)
+fnames = {
+    "MAV": datadir / "activity_matrix_filled.parquet",
+    "CMAV": "cache/assay_cluster_heatmap/activity_by_cluster.parquet",
+}
 
-# Comparing predictions with assay clustering
-activity_by_cluster = pd.read_parquet("cache/assay_cluster_heatmap/activity_by_cluster.parquet")
-ZC = zscore_columns(activity_by_cluster)[0]
-CMAV = ZC.mean(axis=1)
+column_means = {}
+for col_title, fname in fnames.items():
+    df = pd.read_parquet(fname)
+    column_means[col_title], Z_temp = mean_column(df, col_title)
+    if col_title == "MAV":
+        Z = Z_temp
+
+# # load the phthalates data
+# activity_matrix_filled = pd.read_parquet(
+#     datadir / "activity_matrix_filled.parquet"
+# )
+# activity_by_cluster = pd.read_parquet("cache/assay_cluster_heatmap/activity_by_cluster.parquet")
+
+# MAV, Z = mean_column(activity_matrix_filled, "MAV")
+# CMAV = mean_column(activity_by_cluster, "CMAV")[0]
 
 # scratch
 predictions = []
@@ -46,26 +62,32 @@ for index, row in Z.iterrows():
 
 predictions = np.array(predictions)
 
-# Plotting
-plt.figure(figsize=(10, 6))
-sns.regplot(x=MAV, y=predictions, scatter_kws={'s': 10, 'color': 'red'}, line_kws={'color': 'red'})
-# plt.xlabel('Mean Activity Value (MAV)')
-plt.xlabel('MAV and CMAV')
-plt.ylabel('Binary log(RBA) Prediction')
-# plt.show()
+show_scatterplots = False
 
+if show_scatterplots:
+    show_double_plot = False
 
+    # Plotting
+    plt.figure(figsize=(10, 6))
+    sns.regplot(x=column_means["MAV"], y=predictions, scatter_kws={'s': 10, 'color': 'red'}, line_kws={'color': 'red'})
+    # plt.xlabel('Mean Activity Value (MAV)')
+    plt.xlabel('MAV and CMAV')
+    plt.ylabel('Binary log(RBA) Prediction')
+    if not show_double_plot:
+        plt.show()
 
+        # Plotting
+        plt.figure(figsize=(10, 6))
 
-# # Plotting
-# plt.figure(figsize=(10, 6))
-sns.regplot(x=CMAV, y=predictions, scatter_kws={'s': 10, 'color': 'blue'}, line_kws={'color': 'blue'})
-# plt.xlabel('Clustered Mean Activity Value (CMAV)')
-# plt.ylabel('Binary log(RBA) Prediction')
-plt.show()
+    sns.regplot(x=column_means["CMAV"], y=predictions, scatter_kws={'s': 10, 'color': 'blue'}, line_kws={'color': 'blue'})
+    # plt.xlabel('Clustered Mean Activity Value (CMAV)')
+    # plt.ylabel('Binary log(RBA) Prediction')
+    plt.show()
 
-plt.figure(figsize=(10, 6))
-sns.regplot(x=MAV, y=CMAV, scatter_kws={'s': 10, 'color': 'green'}, line_kws={'color': 'green'})
-plt.xlabel('MAV')
-plt.ylabel('CMAV')
-plt.show()
+    plt.figure(figsize=(10, 6))
+    sns.regplot(x=column_means["MAV"], y=column_means["CMAV"], scatter_kws={'s': 10, 'color': 'green'}, line_kws={'color': 'green'})
+    plt.xlabel('MAV')
+    plt.ylabel('CMAV')
+    plt.show()
+
+# label the example phthalates

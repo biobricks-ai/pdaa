@@ -124,7 +124,8 @@ example_phthalates_df.sort_values(by='name', inplace=True)
 
 example_phthalates = [Chem.MolFromSmiles(smiles) for smiles in example_phthalates_df['smiles']]
 example_names = example_phthalates_df['name'].tolist()
-example_inchi = [Chem.MolToInchi(m) for m in example_phthalates]
+# example_inchi = [Chem.MolToInchi(m) for m in example_phthalates]
+example_inchi = example_phthalates_df['inchi'].to_list()
 example_weights = [rdkit.Chem.rdMolDescriptors.CalcExactMolWt(m) for m in example_phthalates]
 example_inchi2name = {inchi: name for inchi, name in zip(example_inchi, example_names)}
 

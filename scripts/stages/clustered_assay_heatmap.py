@@ -338,11 +338,12 @@ def main():
     # ---- Side bar with MAV and labeled example phthalates (copied from entity_similarity.py) ----
     try:
         # load examples
-        ex_df = pd.read_csv(args.example_csv)
-        ex_df["name"] = ex_df["name"].str.replace("Dimethyl ", "", regex=False)
-        ex_mols = [Chem.MolFromSmiles(s) for s in ex_df["smiles"]]
-        ex_inchi = [Chem.MolToInchi(m) for m in ex_mols]
-        ex_inchi2name = dict(zip(ex_inchi, ex_df["name"]))
+        example_df = pd.read_csv(args.example_csv)
+        example_df["name"] = example_df["name"].str.replace("Dimethyl ", "", regex=False)
+        # ex_mols = [Chem.MolFromSmiles(s) for s in example_df["smiles"]]
+        # ex_inchi = [Chem.MolToInchi(m) for m in ex_mols]
+        ex_inchi = example_df['inchi'].to_list()
+        ex_inchi2name = dict(zip(ex_inchi, example_df["name"]))
 
         # MAV per chemical = mean across the already-aggregated cluster means
         # Robust to NaN/inf: skip NaNs in row-mean, coerce non-finite to 0 just for bars.
