@@ -16,7 +16,8 @@ sys.path.append('./')
 from scripts.utils.helpers import zscore_columns, get_example_phthalates_df
 
 def mean_column(df: pd.DataFrame, col_title: str):
-    Z = zscore_columns(df)[0]
+    # Z = zscore_columns(df)[0]
+    Z = df.copy()
     MZ = Z.mean(axis=1)
     MZ.name = col_title
 
@@ -100,18 +101,13 @@ if show_double_plot:
 
 # region HISTOGRAM WITH EXAMPLE PHTHALATES
 # histogram + numbered markers and legend (numbers sorted by prediction)
-fig, ax = plt.subplots(figsize=(11, 6))
-sns.histplot(
-    predictions,
-    bins=30,
-    # kde=False,
-    # color='grey',
-    color='darkseagreen',
-    # alpha=0.4,
-    ax=ax
-)
-ax.set_xlabel(logRBA_label)  # RBA = relative binding affinity
-ax.set_ylabel('Frequency')
+display_stat = 'probability'  # 'count' or 'frequency' or 'probability'
+if display_stat in ['count', 'frequency', 'probability']:
+    ylabel = display_stat.capitalize()
+elif display_stat == 'density':
+    ylabel = 'PDF'
+else:
+    raise ValueError(f"Invalid display_stat: {display_stat}")
 
 # load examples and sort by predicted value (ascending)
 example_phthalates = get_example_phthalates_df()
@@ -119,7 +115,38 @@ ex_df = example_phthalates.assign(
     pred=example_phthalates['inchi'].map(predictions)
 ).sort_values('pred', ascending=True).reset_index(drop=True)
 
-# --- NEW: compute stagger tiers based on pixel spacing ---
+max_example_pred = ex_df['pred'].max()
+prediction_threshold = 0.1
+resrict_range = max_example_pred < prediction_threshold
+
+if resrict_range:
+    predictions_to_plot = predictions[predictions <= prediction_threshold]
+    print(f"Limiting histogram to predictions <= {prediction_threshold} to show examples better.")
+    print(f"Max example prediction: {max_example_pred:.4f}")
+    print(f"Number of predictions shown: {len(predictions_to_plot)} / {len(predictions)}")
+else:
+    predictions_to_plot = predictions
+
+fig, ax = plt.subplots(figsize=(11, 6))
+sns.histplot(
+    predictions_to_plot,
+    bins=30,
+    # kde=False,
+    # color='grey',
+    color='darkseagreen',
+    # alpha=0.4,
+    stat=display_stat,
+    ax=ax
+)
+ax.set_xlabel(logRBA_label)  # RBA = relative binding affinity
+ax.set_ylabel(ylabel)
+
+
+# if max_example_pred < 0.1:
+#     # limit x-axis to show examples better
+#     ax.set_xlim(0, 0.1)
+
+# --- compute stagger tiers based on pixel spacing ---
 fig.canvas.draw()  # ensure transforms are up to date
 xs = ex_df['pred'].to_numpy(dtype=float)
 # transform x-data to display pixels

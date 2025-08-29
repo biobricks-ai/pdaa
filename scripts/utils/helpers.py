@@ -16,6 +16,7 @@ from sklearn.pipeline import Pipeline
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import logging
 import re
+from tqdm import tqdm
 
 from rdkit.Chem import (
     AllChem,
@@ -406,7 +407,10 @@ def get_descriptors(
         feats['Isomer'] = classify_isomer(mol)  # 0=ortho,1=iso,2=tere
     # 3-D shape (needs conformer)
     AllChem.EmbedMolecule(mol, randomSeed=0xC0FFEE)
-    feats['Rgyr'] = Descriptors3D.RadiusOfGyration(mol)
+    try:
+        feats['Rgyr'] = Descriptors3D.RadiusOfGyration(mol)
+    except Exception:
+        feats['Rgyr'] = np.nan
 
     if use_general_set or use_vectors:
         from rdkit.Chem import (
@@ -452,6 +456,64 @@ def get_descriptors(
                     for i, v in enumerate(slogp_vec)})
 
     return feats
+
+def get_descriptor_df(
+        inchis: List[str],
+        *,
+        use_phthalate_set: bool = True,
+        use_general_set: bool = False,
+        use_vectors: bool = False,
+        vif_threshold: Optional[float] = 10.0,
+) -> pd.DataFrame:
+    """
+    Calculate descriptors for a list of InChI strings.
+
+    Parameters
+    ----------
+    inchis : list of str
+        List of InChI strings.
+    use_phthalate_set : bool, default True
+        If True, include phthalate-specific descriptors.
+    use_general_set : bool, default False
+        If True, include a broader set of general-purpose descriptors.
+    use_vectors : bool, default False
+        If True, include vector-based descriptors (PEOE-VSA and SlogP-VSA).
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with descriptors as columns and InChI strings as index.
+    """
+        # Convert the 'title' column to RDKit Mol objects
+    # mol_list = [AllChem.AddHs(AllChem.MolFromInchi(s)) for s in tqdm(inchis, desc="Converting InChIs to RDKit Mol objects")]
+    mol_list = []
+    for inchi in tqdm(inchis.copy(), desc="Converting InChIs to RDKit Mol objects"):
+        mol = AllChem.MolFromInchi(inchi)
+        if mol is None:
+            print(f"Invalid InChI string: {inchi}")
+            inchis.remove(inchi)
+            continue
+        try:
+            mol_list.append(AllChem.AddHs(mol))
+        except Exception:
+            mol_list.append(mol)  # fallback to non-H-added if AddHs fails
+
+    descriptor_vectors = [
+        get_descriptors(
+            mol,
+            use_phthalate_set=use_phthalate_set,
+            use_general_set=use_general_set,
+            use_vectors=use_vectors,
+        ) for mol in tqdm(mol_list, desc="Calculating descriptors")
+    ]
+    descriptor_df = pd.DataFrame(descriptor_vectors, index=inchis)
+    breakpoint()
+
+    if vif_threshold is not None:
+        # Remove descriptors with high VIF
+        descriptor_df = remove_high_vif_descriptors(descriptor_df, vif_threshold=vif_threshold)
+    
+    return descriptor_df
 
 def z_scale_df(df: pd.DataFrame) -> pd.DataFrame:
     # DEPRECATED: use zscore_columns instead

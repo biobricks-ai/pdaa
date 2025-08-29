@@ -28,6 +28,7 @@ from scripts.utils.helpers import (
     # Gaussian_mixture_clustering,
     process_dataset_endpoint,
     build_activity_matrix_filled_from_inchis,
+    get_descriptor_df,
 )
 
 """ EADB endpoints for reference:
@@ -364,25 +365,27 @@ Mean CV ROC-AUC: {mean_auc:.3f} ± {std_err_auc:.3f} (SE)
 def write_xgb_classifier_feature_selection(
         *,
         outdir: Path,
-        activity_df: pd.DataFrame,
+        matrix_df: pd.DataFrame,
         dataset: pd.DataFrame,
         k: int | str = 'all',
+        use_descriptors: bool = False,
 ):
     """
     Run XGB classifier feature selection for each EADB endpoint and write results to a file.
     """
+    save_path_suffix = '_descriptors' if use_descriptors else ''
     # Write results to a text file
     with open(outdir / 'xgb_classifier_feature_selection.txt', 'w') as f:
         for endpoint in dataset.EndpointName.unique():
             vals, adj_endpoint, threshold = process_dataset_endpoint(dataset, endpoint)
             
-            index_intersection = activity_df.index.intersection(vals.index)
-            X = activity_df.loc[index_intersection]
+            index_intersection = matrix_df.index.intersection(vals.index)
+            X = matrix_df.loc[index_intersection]
             # y_binary = vals.loc[index_intersection] > threshold  # binary target based on threshold
             y_binary = (vals.loc[index_intersection] > threshold).squeeze() # binary target based on threshold
 
             if endpoint == 'logRBA':
-                model_save_path = outdir / 'xgb_classifier_logRBA_model.json'
+                model_save_path = outdir / f'xgb_classifier_logRBA_model{save_path_suffix}.json'
             else:
                 model_save_path = None
                 continue  # only process logRBA for now
@@ -432,9 +435,10 @@ if __name__ == "__main__":
     parser.add_argument('--random_state', type=int, default=0, help="Random seed for reproducibility.")
     parser.add_argument('--endpoint', type=str, default=None,
                         help="Specific EADB endpoint to process (if provided).")
-    parser.add_argument('--build_activity', action='store_true',
-                        help="Build the activity matrix from scratch instead of using cached version.")
-    
+    parser.add_argument('--use_descriptors', action='store_true',
+                        help="Use chemical descriptors instead of activity matrix.")
+    parser.add_argument('--build_matrix', action='store_true',
+                        help="Build the activity or descriptor matrix from scratch instead of using cached version.")
     args = parser.parse_args()
 
     # Read the specified dataset
@@ -446,25 +450,31 @@ if __name__ == "__main__":
     outdir = cachedir / args.dataset
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Read the activity matrix from the cache
-    activity_path = outdir / 'activity_matrix_filled.parquet'
-    if activity_path.exists() and not args.build_activity:
-        print(f"Loading cached activity matrix from {activity_path}...")
-        # activity_df = pd.read_parquet(cachedir / 'entity_similarity/activity_matrix_filled.parquet')
-        activity_df = pd.read_parquet(activity_path)
+    # Read the matrix from cache or build it from scratch
+    matrix_name = 'descriptor matrix' if args.use_descriptors else 'activity matrix'
+    suffix = "" if args.use_descriptors else "_filled"
+    # matrix_parquet = 'descriptor_matrix_filled.parquet' if args.use_descriptors else 'activity_matrix_filled.parquet'
+    matrix_parquet = f'{matrix_name.replace(" ", "_")}{suffix}.parquet'
+    matrix_parquet = outdir / matrix_parquet
+    if matrix_parquet.exists() and not args.build_matrix:
+        print(f"Loading cached {matrix_name} from {matrix_parquet}...")
+        # matrix_df = pd.read_parquet(cachedir / 'entity_similarity/activity_matrix_filled.parquet')
+        matrix_df = pd.read_parquet(matrix_parquet)
     else:
-        print("Building activity matrix from scratch...")
-        activity_df = build_activity_matrix_filled_from_inchis(
-            list(set(dataset.inchi)),
-        )
-        activity_df.to_parquet(activity_path)    
+        print(f"Building {matrix_name} from scratch...")
+        if args.use_descriptors:
+            f = lambda x: get_descriptor_df(x, use_phthalate_set=False, vif_threshold=10.0)
+        else:
+            f = build_activity_matrix_filled_from_inchis
+            
+        inchis = dataset.inchi.dropna().unique()
+        matrix_df = f(inchis)
+        matrix_df.to_parquet(matrix_parquet)    
 
     if args.transform == 'z_scale':
-        activity_df = zscore_columns(activity_df)
+        matrix_df = zscore_columns(matrix_df)
     elif args.transform == 'binary':
-        activity_df = (activity_df > 0.5).astype(int)
-
-    
+        matrix_df = (matrix_df > 0.5).astype(int)
 
     if (args.k is None) or (args.k == 'None') or (args.k == 'all'):
         k = 'all'
@@ -473,7 +483,8 @@ if __name__ == "__main__":
 
     write_xgb_classifier_feature_selection(
         outdir=outdir,
-        activity_df=activity_df,
+        matrix_df=matrix_df,
         dataset=dataset,
         k=k,
+        use_descriptors=args.use_descriptors,
     )
