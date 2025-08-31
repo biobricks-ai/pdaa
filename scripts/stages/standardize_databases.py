@@ -1,6 +1,7 @@
 import time
 import json
 import math
+import os
 import re
 from typing import Dict, Optional, Tuple
 
@@ -9,6 +10,7 @@ import requests
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors as Descr
 from rdkit.Chem.MolStandardize import rdMolStandardize as Std
+from tqdm.auto import tqdm
 
 # Add near the top with other imports:
 from pathlib import Path
@@ -291,7 +293,52 @@ def enrich_df(df: pd.DataFrame, name_col="Name", cas_col="Cas Decimal",
 
     return pd.DataFrame(rows)
 
-# Add at the very end of the file:
+def _row_key(idx: int, row: pd.Series) -> str:
+    """Stable key per row for checkpointing. Prefer the dataset ID when present."""
+    rid = row.get("ID")
+    if pd.notna(rid):
+        return f"id:{rid}"
+    return f"idx:{idx}"
+
+def iter_enriched(
+    df: pd.DataFrame,
+    name_col: str = "Name",
+    cas_col: str = "Cas Decimal",
+    smiles_col: str = "smiles",
+    inchi_col: str = "inchi",
+):
+    """
+    Stream enriched rows one at a time. This enables progress bars and checkpointing.
+    """
+    for idx, row in df.iterrows():
+        name = clean_name(row.get(name_col))
+        cas = normalize_cas(str(row.get(cas_col))) if pd.notna(row.get(cas_col)) else None
+
+        given_mol = mol_from_any(row.get(smiles_col), row.get(inchi_col))
+        if given_mol:
+            props = mol_props(given_mol)
+            candidate = {"source": "given", **props}
+        else:
+            candidate = resolve_structure(name, cas) or {}
+
+        if candidate:
+            _, audited = validate_record(row, candidate)
+        else:
+            audited = {"status": "unresolved", "notes": "No resolver returned a structure"}
+
+        audited.update({
+            "orig_name": row.get(name_col),
+            "orig_cas": row.get(cas_col),
+            "orig_smiles": row.get(smiles_col),
+            "orig_inchi": row.get(inchi_col),
+            "id": row.get("ID"),
+            "row_index": idx,
+            "row_key": _row_key(idx, row),
+        })
+
+        yield audited
+        time.sleep(0.12)
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Resolve and audit chemical structures (SMILES/InChI) with validation."
@@ -302,45 +349,135 @@ def main() -> None:
     parser.add_argument("--cas_col", default="Cas Decimal", help="Column containing CAS RN.")
     parser.add_argument("--smiles_col", default="smiles", help="Column containing existing SMILES, if any.")
     parser.add_argument("--inchi_col", default="inchi", help="Column containing existing InChI, if any.")
+    parser.add_argument("--checkpoint_path", default=None, help="Optional path to a checkpoint CSV.")
+    parser.add_argument("--checkpoint_every", type=int, default=100, help="Write checkpoint every N rows.")
+    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint if present.")
     args = parser.parse_args()
 
-    df = pd.read_csv(args.input)
-    for col in [args.inchi_col, args.smiles_col, args.name_col, args.cas_col]:
-        if col in df.columns:
-            df[col] = df[col].astype("object")  # avoid pandas NA semantics breaking truthiness
+    df = pd.read_csv(args.input, dtype="object")  # keep string-like columns as object
+    print(f"Loaded {len(df)} rows from {args.input}")
 
-    # Ensure expected columns exist (no-op if already present)
+    # Ensure expected columns exist
     for col in [args.name_col, args.cas_col, args.smiles_col, args.inchi_col, "Fmla", "Molecular Weight", "ID"]:
         if col not in df.columns:
             df[col] = None
 
-    # Run resolver + auditor
-    out = enrich_df(
-        df,
-        name_col=args.name_col,
-        cas_col=args.cas_col,
-        smiles_col=args.smiles_col,
-        inchi_col=args.inchi_col,
-    )
+    # Determine checkpoint path
+    checkpoint_path = args.checkpoint_path or (str(Path(args.output)) + ".checkpoint.csv")
 
-    # Nice column order for triage
+    # Load prior progress if resuming
+    existing = None
+    processed_keys = set()
+    if args.resume and os.path.exists(checkpoint_path):
+        print(f"Resuming from checkpoint {checkpoint_path}")
+        try:
+            existing = pd.read_csv(checkpoint_path, dtype="object")
+            if "row_key" in existing.columns:
+                processed_keys = set(existing["row_key"].dropna().astype(str).tolist())
+            elif "id" in existing.columns:
+                processed_keys = set("id:" + existing["id"].dropna().astype(str))
+        except Exception:
+            existing = None
+            processed_keys = set()
+
+    # Progress bar setup
+    n_total = len(df)
+    # Estimate remaining; exact remaining is computed on the fly
+    pbar = tqdm(total=n_total, desc="Resolving structures", unit="row")
+
+    # If resuming, advance the bar to the number of already processed rows we can identify
+    if processed_keys:
+        # Best-effort approximation; safe even if keys are for a different input file
+        pbar.update(min(len(processed_keys), n_total))
+
+    status_counts: Dict[str, int] = {"ok": 0, "review": 0, "unresolved": 0}
+    new_rows: list = []
+
+    # Append mode writer for checkpoint
+    def _flush_checkpoint(rows_chunk: list) -> None:
+        if not rows_chunk:
+            return
+        df_chunk = pd.DataFrame(rows_chunk)
+        header = not os.path.exists(checkpoint_path)
+        Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
+        df_chunk.to_csv(checkpoint_path, mode="a", header=header, index=False)
+
+    # Stream processing with resume
+    print("Starting database standardization and structure resolution...")
+    processed_since_flush = 0
+    for idx, row in df.iterrows():
+        key = _row_key(idx, row)
+        if key in processed_keys:
+            pbar.update(1)
+            continue
+
+        audited = next(iter_enriched(
+            pd.DataFrame([row]),
+            name_col=args.name_col,
+            cas_col=args.cas_col,
+            smiles_col=args.smiles_col,
+            inchi_col=args.inchi_col,
+        ))
+
+        status = str(audited.get("status", "unresolved"))
+        if status in status_counts:
+            status_counts[status] += 1
+        else:
+            status_counts[status] = 1
+
+        new_rows.append(audited)
+        processed_since_flush += 1
+
+        # Periodic checkpoint
+        if processed_since_flush >= args.checkpoint_every:
+            _flush_checkpoint(new_rows)
+            new_rows.clear()
+            processed_since_flush = 0
+
+        # Progress bar update
+        pbar.update(1)
+        pbar.set_postfix(status=status_counts, refresh=False)
+
+    # Final checkpoint flush
+    _flush_checkpoint(new_rows)
+    new_rows.clear()
+    pbar.close()
+
+    # Consolidate final output: combine existing checkpoint (if any) with new rows and write output
+    parts = []
+    if existing is not None:
+        parts.append(existing)
+    if os.path.exists(checkpoint_path):
+        # Reload to ensure we include final flushed rows
+        parts.append(pd.read_csv(checkpoint_path, dtype="object"))
+    out = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=[
+        "id","orig_name","orig_cas","orig_smiles","orig_inchi","smiles","inchi","inchikey",
+        "formula","exact_mass","cid","source","status","confidence","notes","row_index","row_key"
+    ])
+
+    # Column order for triage
     preferred = [
         "id",
         "orig_name", "orig_cas", "orig_smiles", "orig_inchi",
         "smiles", "inchi", "inchikey", "formula", "exact_mass",
         "cid", "source", "status", "confidence", "notes",
+        "row_index", "row_key",
     ]
     cols = [c for c in preferred if c in out.columns] + [c for c in out.columns if c not in preferred]
     out = out[cols]
 
-    # Write output
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(args.output, index=False)
+    print(f"Wrote {len(out)} rows to {args.output}")
 
-    # Brief summary to stdout
-    status_counts = out["status"].value_counts(dropna=False).to_dict()
-    print(json.dumps({"n_rows": len(out), "status_counts": status_counts}, indent=2))
-
+    # Summary to stdout
+    final_counts = out["status"].value_counts(dropna=False).to_dict() if "status" in out.columns else {}
+    print(json.dumps({
+        "n_rows": len(out),
+        "status_counts": final_counts,
+        "output": args.output,
+        "checkpoint": checkpoint_path,
+    }, indent=2))
 
 if __name__ == "__main__":
     main()
