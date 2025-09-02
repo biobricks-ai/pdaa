@@ -686,9 +686,12 @@ def smiles_to_inchi(smiles):
     return inchi
 
 def inchi_to_smiles(inchi):
-    mol = AllChem.MolFromInchi(inchi)
-    smiles = AllChem.MolToSmiles(mol)
-    return smiles
+    try:
+        mol = AllChem.MolFromInchi(inchi)
+        smiles = AllChem.MolToSmiles(mol)
+        return smiles
+    except Exception:
+        return None
 
 def styled_heatmap(matrix, *,
     dpi=600,

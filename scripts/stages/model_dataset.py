@@ -375,7 +375,8 @@ def write_xgb_classifier_feature_selection(
     """
     save_path_suffix = '_descriptors' if use_descriptors else ''
     # Write results to a text file
-    with open(outdir / 'xgb_classifier_feature_selection.txt', 'w') as f:
+    outfile = outdir / f'xgb_classifier_feature_selection_{k}{save_path_suffix}.txt'
+    with open(outfile, 'w') as f:
         for endpoint in dataset.EndpointName.unique():
             vals, adj_endpoint, threshold = process_dataset_endpoint(dataset, endpoint)
             
@@ -407,6 +408,8 @@ def write_xgb_classifier_feature_selection(
             f.write("\nTop 20 features (best outer fold):\n")
             f.write(imp_series.to_string())
             f.write("\n\n")
+
+    print(f"Results written to {outfile}")
 
 # get_xgb_classifier_feature_selection()
 
