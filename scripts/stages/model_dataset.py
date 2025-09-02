@@ -7,8 +7,6 @@ from tqdm import tqdm
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 
-from rdkit.Chem import AllChem
-
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import StratifiedKFold, cross_validate
 
@@ -97,7 +95,10 @@ def get_binary_model(X: pd.DataFrame, y_binary: pd.Series):
     
     return logit_model
 
-def get_decision_tree_model(X: pd.DataFrame, y_binary: pd.Series):
+def get_decision_tree_model(
+        X: pd.DataFrame, y_binary: pd.Series, *,
+        n_jobs: int = -1,
+):
     print("Fitting decision tree model with 5-fold stratified cross-validation...")
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
     dt_model = DecisionTreeClassifier(random_state=0)
@@ -109,7 +110,7 @@ def get_decision_tree_model(X: pd.DataFrame, y_binary: pd.Series):
         cv=cv,
         scoring=['accuracy', 'roc_auc'],
         return_estimator=True,
-        n_jobs=-1,
+        n_jobs=n_jobs,
     )
 
     print(f"Mean CV accuracy: {cv_results['test_accuracy'].mean():.3f} ± {cv_results['test_accuracy'].std():.3f}")
@@ -133,6 +134,7 @@ def get_decision_tree_model_feature_selection(
     *,
     transform_type='',
     k: int | str = 'all',
+    n_jobs: int = -1,
 ):
     pipe = Pipeline([
         ("filter_mi", SelectKBest(mutual_info_classif, k=k)),  # tune k
@@ -148,7 +150,7 @@ def get_decision_tree_model_feature_selection(
         y_binary,
         cv=cv,
         scoring=['accuracy', 'roc_auc'],
-        n_jobs=-1
+        n_jobs=n_jobs
     )
     print("Results for Decision Tree with feature selection:")
     print(f"\tMean CV accuracy: {cv_results['test_accuracy'].mean():.3f} ± {cv_results['test_accuracy'].std():.3f}")
@@ -173,6 +175,7 @@ def get_random_forest_regressor_feature_selection(
     k: int | str = 'all',  # number of top features to keep
     n_estimators=200,
     max_depth=None,
+    n_jobs: int = -1,
 ):
     """
     Train a RandomForestRegressor with optional feature selection and data transform.
@@ -206,7 +209,7 @@ def get_random_forest_regressor_feature_selection(
             n_estimators=n_estimators,
             max_depth=max_depth,
             random_state=0,
-            n_jobs=-1,
+            n_jobs=n_jobs,
         )),
     ])
 
@@ -219,7 +222,7 @@ def get_random_forest_regressor_feature_selection(
         cv=cv,
         scoring=['r2', 'neg_root_mean_squared_error'],
         return_estimator=True,
-        n_jobs=-1,
+        n_jobs=n_jobs,
     )
 
     mean_r2 = cv_results['test_r2'].mean()
@@ -247,6 +250,7 @@ def get_xgb_classifier_feature_selection(
     n_iter: int = 30,
     random_state: int = 0,
     model_save_path: Path | None = None,
+    n_jobs: int = -1,
 ):
     """
     Extreme Gradient Boosting (binary classification) with MI feature selection
@@ -284,7 +288,7 @@ def get_xgb_classifier_feature_selection(
             tree_method='hist',         # fast histogram-based split finding
             # use_label_encoder=False,
             random_state=random_state,
-            n_jobs=-1,
+            n_jobs=n_jobs,
         )),
     ])
 
@@ -307,7 +311,7 @@ def get_xgb_classifier_feature_selection(
         n_iter=n_iter,
         cv=inner_cv,
         scoring='roc_auc',
-        n_jobs=-1,
+        n_jobs=n_jobs,
         verbose=1,
         random_state=random_state,
     )
@@ -323,7 +327,7 @@ def get_xgb_classifier_feature_selection(
                 cv=outer_cv,
                 scoring=['accuracy', 'roc_auc'],
                 return_estimator=True,
-                n_jobs=-1,
+                n_jobs=n_jobs,
                 verbose=1,
             )
         except ValueError as e:
@@ -369,6 +373,7 @@ def write_xgb_classifier_feature_selection(
         dataset: pd.DataFrame,
         k: int | str = 'all',
         use_descriptors: bool = False,
+        n_jobs: int = -1,
 ):
     """
     Run XGB classifier feature selection for each EADB endpoint and write results to a file.
@@ -396,6 +401,7 @@ def write_xgb_classifier_feature_selection(
                 y_binary,
                 model_save_path=model_save_path,
                 k=k,
+                n_jobs=n_jobs,
             )
             # handle errors in feature selection
             if metrics is None:
@@ -442,6 +448,7 @@ if __name__ == "__main__":
                         help="Use chemical descriptors instead of activity matrix.")
     parser.add_argument('--build_matrix', action='store_true',
                         help="Build the activity or descriptor matrix from scratch instead of using cached version.")
+    parser.add_argument('--n_jobs', type=int, default=-1, help="Number of parallel jobs to run (-1 uses all available cores).")
     args = parser.parse_args()
 
     # Read the specified dataset
@@ -472,7 +479,8 @@ if __name__ == "__main__":
             
         inchis = dataset.inchi.dropna().unique()
         matrix_df = f(inchis)
-        matrix_df.to_parquet(matrix_parquet)    
+        matrix_df.to_parquet(matrix_parquet)
+        print(f"{matrix_name} saved to {matrix_parquet}.")  
 
     if args.transform == 'z_scale':
         matrix_df = zscore_columns(matrix_df)
@@ -490,4 +498,5 @@ if __name__ == "__main__":
         dataset=dataset,
         k=k,
         use_descriptors=args.use_descriptors,
+        n_jobs=args.n_jobs,
     )
