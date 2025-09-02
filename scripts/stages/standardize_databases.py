@@ -15,6 +15,10 @@ from tqdm.auto import tqdm
 from pathlib import Path
 import argparse
 
+import sys
+sys.path.append('./')
+from scripts.utils.helpers import suppress_rdkit_messages
+
 # Formula normalization helpers
 FORMULA_TOKEN = re.compile(r'([A-Z][a-z]?)(\d*)')
 
@@ -437,6 +441,8 @@ def main() -> None:
     parser.add_argument("--checkpoint_every", type=int, default=100, help="Write checkpoint every N rows.")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint if present.")
     args = parser.parse_args()
+
+    suppress_rdkit_messages(info=True, warnings=True, errors=False)
 
     df = pd.read_csv(args.input, dtype="object")  # keep string-like columns as object
     print(f"Loaded {len(df)} rows from {args.input}")

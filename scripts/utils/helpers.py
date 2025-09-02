@@ -26,6 +26,15 @@ from rdkit.Chem import (
     rdFingerprintGenerator as rfg
 )
 
+def suppress_rdkit_messages(*, info=True, warnings=True, errors=False):
+    from rdkit import RDLogger
+    if info:
+        RDLogger.DisableLog('rdApp.info') # Disables info messages
+    if warnings:
+        RDLogger.DisableLog('rdApp.warning') # Disables warning messages
+    if errors:
+        RDLogger.DisableLog('rdApp.error') # Disables error messages
+
 # Central registry of phthalate SMARTS patterns
 SMARTS_PATTERNS = {
     # Ortho-phthalic acid di-ester
@@ -484,7 +493,9 @@ def get_descriptor_df(
     pd.DataFrame
         DataFrame with descriptors as columns and InChI strings as index.
     """
-        # Convert the 'title' column to RDKit Mol objects
+    if not isinstance(inchis, (list, tuple)):
+        inchis = list(set(inchis))  # ensure unique InChIs
+    # Convert the 'title' column to RDKit Mol objects
     # mol_list = [AllChem.AddHs(AllChem.MolFromInchi(s)) for s in tqdm(inchis, desc="Converting InChIs to RDKit Mol objects")]
     mol_list = []
     for inchi in tqdm(inchis.copy(), desc="Converting InChIs to RDKit Mol objects"):
@@ -498,16 +509,21 @@ def get_descriptor_df(
         except Exception:
             mol_list.append(mol)  # fallback to non-H-added if AddHs fails
 
-    descriptor_vectors = [
-        get_descriptors(
-            mol,
-            use_phthalate_set=use_phthalate_set,
-            use_general_set=use_general_set,
-            use_vectors=use_vectors,
-        ) for mol in tqdm(mol_list, desc="Calculating descriptors")
-    ]
+    descriptor_vectors = []
+    for inchi, mol in tqdm(zip(inchis, mol_list), desc="Calculating descriptors", total=len(mol_list)):
+        try:
+            descs = get_descriptors(
+                mol,
+                use_phthalate_set=use_phthalate_set,
+                use_general_set=use_general_set,
+                use_vectors=use_vectors,
+            )
+            descriptor_vectors.append(descs)
+        except Exception as e:
+            print(f"Error calculating descriptors for InChI {inchi}: {e}")
+            descriptor_vectors.append({})  # Append empty dict on error
+
     descriptor_df = pd.DataFrame(descriptor_vectors, index=inchis)
-    breakpoint()
 
     if vif_threshold is not None:
         # Remove descriptors with high VIF
