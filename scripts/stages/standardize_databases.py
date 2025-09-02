@@ -12,9 +12,61 @@ from rdkit.Chem import rdMolDescriptors as Descr
 from rdkit.Chem.MolStandardize import rdMolStandardize as Std
 from tqdm.auto import tqdm
 
-# Add near the top with other imports:
 from pathlib import Path
 import argparse
+
+# Formula normalization helpers
+FORMULA_TOKEN = re.compile(r'([A-Z][a-z]?)(\d*)')
+
+def _parse_formula(formula: str) -> Dict[str, int]:
+    if not isinstance(formula, str):
+        return {}
+    counts: Dict[str, int] = {}
+    for part in formula.replace(" ", "").split("·"):  # dot-separated solvates/counterions
+        for elem, num in FORMULA_TOKEN.findall(part):
+            n = int(num) if num else 1
+            counts[elem] = counts.get(elem, 0) + n
+    return counts
+
+def _hill_rebuild(counts: Dict[str, int]) -> str:
+    if not counts:
+        return ""
+    out = []
+    if "C" in counts:
+        c = counts["C"]
+        out.append(f"C{'' if c == 1 else c}")
+        h = counts.get("H", 0)
+        if h:
+            out.append(f"H{'' if h == 1 else h}")
+    # Remaining elements in alphabetical order, excluding C and H
+    others = sorted(k for k in counts.keys() if k not in {"C", "H"})
+    for e in others:
+        n = counts[e]
+        out.append(f"{e}{'' if n == 1 else n}")
+    return "".join(out)
+
+def normalize_dataset_formula(formula: str) -> str:
+    # Keep the largest dot fragment by heavy-atom count; rebuild to Hill order.
+    parts = formula.replace(" ", "").split("·")
+    def heavy_count(s: str) -> int:
+        c = _parse_formula(s)
+        return sum(v for k, v in c.items() if k != "H")
+    best = max(parts, key=heavy_count) if parts else formula
+    return _hill_rebuild(_parse_formula(best))
+
+# Stereo heuristics
+_STEREO_HINTS = (" cis", " trans", "(r)", "(s)", " r-", " s-", "(e)", "(z)", " e-", " z-", "alpha", "beta", "racemate", "dl-", "d,l-")
+def name_has_stereo_hint(name: Optional[str]) -> bool:
+    if not isinstance(name, str):
+        return False
+    s = " " + name.lower().strip()  # pad to catch word-boundary hints like " cis"
+    return any(h in s for h in _STEREO_HINTS)
+
+def inchi_has_stereo_layers(inchi: Optional[str]) -> bool:
+    if not isinstance(inchi, str):
+        return False
+    # InChI stereo info typically present in /t (tetrahedral), /b (double bond), +/- with /m,/s layers
+    return any(tag in inchi for tag in ("/t", "/b", "/m", "/s"))
 
 
 # ---------- Utilities ----------
@@ -217,44 +269,65 @@ def validate_record(row: pd.Series, candidate: Dict[str, str]) -> Tuple[float, D
 
     props = mol_props(mol)
 
-    # Formula check
-    fmla_src = str(row.get("Fmla") or "").strip()
-    if fmla_src and props["formula"] == fmla_src:
-        score += 0.3
-    elif fmla_src:
-        notes.append(f"Formula mismatch: src={fmla_src}, got={props['formula']}")
+    # Formula: require match when dataset formula present (after normalization)
+    fmla_src_raw = str(row.get("Fmla") or "").strip()
+    fmla_required_ok = False
+    if fmla_src_raw:
+        fmla_required_ok = True
+        fmla_src = normalize_dataset_formula(fmla_src_raw)
+        if props["formula"] == fmla_src:
+            score += 0.35
+        else:
+            notes.append(f"Formula mismatch (required): src={fmla_src_raw} -> {fmla_src}, got={props['formula']}")
+
+        # Element-set screen: strong signal of misassignment
+        src_elems = set(k for k in _parse_formula(fmla_src).keys())
+        got_elems = set(k for k in _parse_formula(props["formula"]).keys())
+        if src_elems != got_elems:
+            notes.append(f"Element-set mismatch: src={sorted(src_elems)}, got={sorted(got_elems)}")
+            # Do not add score when element sets differ.
 
     # Mass check (ppm tolerance)
     mw_src = row.get("Molecular Weight")
     try:
-        mw_src = float(mw_src)
+        mw_src_f = float(mw_src)
         mass = float(props["exact_mass"])
-        ppm = abs(mw_src - mass) / mass * 1e6
+        ppm = abs(mw_src_f - mass) / mass * 1e6
         if ppm < 10:
             score += 0.2
         else:
-            notes.append(f"Mass delta {ppm:.1f} ppm (src={mw_src}, exact={mass})")
+            notes.append(f"Mass delta {ppm:.1f} ppm (src={mw_src_f}, exact={mass})")
     except Exception:
         pass
 
-    # CAS or name provenance via PubChem when available
+    # Stereo heuristic
+    nm = row.get("Name")
+    if name_has_stereo_hint(nm) and not inchi_has_stereo_layers(props.get("inchi")):
+        notes.append("Stereo hint in name but InChI lacks stereo layers")
+
+    # PubChem provenance bonus
     if candidate.get("source") == "pubchem" and candidate.get("cid"):
-        score += 0.2  # CID provides stronger provenance
-    # Stereo/isomer specificity — assume high if full InChIKey present
-    if candidate.get("inchikey"):
         score += 0.2
+
+    # InChIKey present (structure specificity)
+    if candidate.get("inchikey"):
+        score += 0.15
 
     # Parsability + standardization success
     score += 0.1
 
+    # Final status: never 'ok' if formula required and mismatched
+    status = "ok" if (score >= 0.7 and (not fmla_required_ok or normalize_dataset_formula(fmla_src_raw) == props["formula"])) else "review"
+
     out = {
         **candidate,
         **props,
-        "status": "ok" if score >= 0.7 else "review",
+        "status": status,
         "confidence": f"{score:.2f}",
         "notes": "; ".join(notes) if notes else "",
     }
     return score, out
+
 
 # ---------- Main pipeline ----------
 
@@ -265,17 +338,28 @@ def enrich_df(df: pd.DataFrame, name_col="Name", cas_col="Cas Decimal",
         name = clean_name(row.get(name_col))
         cas = normalize_cas(str(row.get(cas_col))) if pd.notna(row.get(cas_col)) else None
 
-        # If present, try to standardize existing structure first
+        # Prefer existing structure; validate; if not ok, try resolver and keep better
+        cand_best = None
+        score_best = -1.0
+        audited = None
+
         given_mol = mol_from_any(row.get(smiles_col), row.get(inchi_col))
         if given_mol:
-            props = mol_props(given_mol)
-            candidate = {"source": "given", **props}
-        else:
-            candidate = resolve_structure(name, cas) or {}
+            cand_given = {"source": "given", **mol_props(given_mol)}
+            score_g, audit_g = validate_record(row, cand_given)
+            cand_best, score_best, audited = cand_given, score_g, audit_g
 
-        if candidate:
-            _, audited = validate_record(row, candidate)
-        else:
+        # Decide whether we need resolution
+        need_resolve = (audited is None) or (audited.get("status") != "ok")
+
+        if need_resolve:
+            cand_res = resolve_structure(name, cas)
+            if cand_res:
+                score_r, audit_r = validate_record(row, cand_res)
+                if score_r > score_best:
+                    cand_best, score_best, audited = cand_res, score_r, audit_r
+
+        if audited is None:
             audited = {"status": "unresolved", "notes": "No resolver returned a structure"}
 
         # Keep context
@@ -361,6 +445,13 @@ def main() -> None:
     for col in [args.name_col, args.cas_col, args.smiles_col, args.inchi_col, "Fmla", "Molecular Weight", "ID"]:
         if col not in df.columns:
             df[col] = None
+
+    # Minimize redundant checks
+    before = len(df)
+    df.drop_duplicates(subset=["ID", "Name", "Cas Decimal"], inplace=True, ignore_index=True)
+    after = len(df)
+    if after != before:
+        print(f"De-duplicated rows: {before - after} removed; {after} remain")
 
     # Determine checkpoint path
     checkpoint_path = args.checkpoint_path or (str(Path(args.output)) + ".checkpoint.csv")
