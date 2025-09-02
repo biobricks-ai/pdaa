@@ -275,6 +275,8 @@ def get_xgb_classifier_feature_selection(
     from sklearn.feature_selection import mutual_info_classif
     from sklearn.model_selection import RandomizedSearchCV
     from xgboost import XGBClassifier
+    import joblib
+    import pickle
     import warnings
 
     X_trans = transform_X(X, transform_type)
@@ -354,6 +356,13 @@ Mean CV ROC-AUC: {mean_auc:.3f} ± {std_err_auc:.3f} (SE)
         # Save the best model to a file
         best_model.named_steps['clf'].save_model(model_save_path)
         print(f"Best model saved to {model_save_path}")
+        try:
+            joblib.dump(best_model, model_save_path.with_suffix('.joblib'))
+            print(f"Full pipeline saved to {model_save_path.with_suffix('.joblib')}")
+        except Exception as e:
+            with open(model_save_path.with_suffix('.pkl'), 'wb') as f:
+                pickle.dump(best_model, f)
+            print(f"Full pipeline saved to {model_save_path.with_suffix('.pkl')} using pickle due to: {e}")
 
     # Optional: inspect its top feature importances
     importances = best_model.named_steps['clf'].feature_importances_

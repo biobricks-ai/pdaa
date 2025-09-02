@@ -11,11 +11,11 @@ Typical usage:
   python explain_rba_model.py \
       --model path/to/pipeline.pkl \
       --data path/to/features.csv \
-      --target-col y_binary \
+      --target_col y_binary \
       --all
 
 Optional: run selected analyses, e.g.:
-  --pi --shap-global --pdp TPSA cLogP Fsp3 --split-stats --threshold youden
+  --pi --shap_global --pdp TPSA cLogP Fsp3 --split_stats --threshold youden
 """
 
 import argparse
@@ -24,21 +24,29 @@ import os
 import sys
 import pickle
 from typing import Dict, Iterable, List, Tuple
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from xgboost import XGBClassifier
+
+import sys
+sys.path.append("./")
+from scripts.utils.helpers import process_dataset_endpoint
+
 # --------------------------- Utilities ---------------------------
 
 def _load_pipeline(path: str):
     """Load sklearn/xgboost pipeline via joblib or pickle."""
-    try:
-        import joblib  # noqa: F401
-        return joblib.load(path)  # type: ignore[attr-defined]
-    except Exception:
-        with open(path, "rb") as f:
-            return pickle.load(f)
+    import joblib  # noqa: F401
+    return joblib.load(path)  # type: ignore[attr-defined]
+    # try:
+    
+    # except Exception:
+    #     with open(path, "rb") as f:
+    #         return pickle.load(f)
 
 def _ensure_outdir(outdir: str) -> None:
     os.makedirs(outdir, exist_ok=True)
@@ -222,7 +230,7 @@ def optimize_probability_threshold(best_pipe, X: pd.DataFrame, y: pd.Series, cri
     report = dict(threshold=threshold, TP=int(tp), FP=int(fp), TN=int(tn), FN=int(fn))
     return threshold, report
 
-def visualize_one_tree(best_pipe, tree_index=0, outdir: str = ".", dpi=150, figsize=(12, 8)):
+def visualize_one_tree(best_pipe, tree_index=0, outdir: str = ".", dpi=900, figsize=(12, 8)):
     """Save a matplotlib rendering of one boosted tree."""
     from xgboost import plot_tree  # type: ignore
     _ensure_outdir(outdir)
@@ -240,7 +248,6 @@ def networkx_graph_for_tree(best_pipe, tree_index=0):
         import networkx as nx  # noqa: F401
     except Exception as e:
         raise RuntimeError("Missing dependency: networkx") from e
-    import networkx as nx
     booster = best_pipe.named_steps["clf"].get_booster()
     df = booster.trees_to_dataframe()
     df_tree = df[df["Tree"] == tree_index].copy()
@@ -270,29 +277,30 @@ def train_surrogate_rules(best_pipe, X: pd.DataFrame, max_depth=3):
 # --------------------------- CLI ---------------------------
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    cachedir = Path("cache/combined")
     p = argparse.ArgumentParser(description="Interpret a trained XGBClassifier for log(RBA) high/low.")
-    p.add_argument("--model", required=True, help="Path to pickled pipeline (joblib/pkl).")
-    p.add_argument("--data", required=False, help="Path to CSV/Parquet with features and target.")
-    p.add_argument("--target-col", default="y", help="Target column name in --data.")
-    p.add_argument("--drop-cols", nargs="*", default=[], help="Extra columns to drop (IDs, metadata).")
-    p.add_argument("--outdir", default="explain_rba_out", help="Output directory for plots and tables.")
+    p.add_argument("--model", default=cachedir / "xgb_classifier_logRBA_model_descriptors.joblib", help="Path to pipeline.")
+    p.add_argument("--data", default=cachedir / "descriptor_matrix.parquet", type=Path, help="Path to CSV/Parquet with features and target.")
+    # p.add_argument("--target_col", default="y", help="Target column name in --data.")
+    # p.add_argument("--drop_cols", nargs="*", default=[], help="Extra columns to drop (IDs, metadata).")
+    p.add_argument("--outdir", default=cachedir / "explain_rba_out", help="Output directory for plots and tables.")
 
     # Toggles
     p.add_argument("--all", action="store_true", help="Run all analyses that require available inputs.")
     p.add_argument("--pi", action="store_true", help="Permutation importance.")
-    p.add_argument("--shap-global", action="store_true", help="SHAP global summary plots.")
+    p.add_argument("--shap_global", action="store_true", help="SHAP global summary plots.")
     p.add_argument("--pdp", nargs="*", default=None, metavar="FEAT", help="Features for PDP plots (e.g., TPSA cLogP Fsp3).")
-    p.add_argument("--split-stats", action="store_true", help="Aggregate split thresholds across trees.")
+    p.add_argument("--split_stats", action="store_true", help="Aggregate split thresholds across trees.")
     p.add_argument("--interactions", nargs=2, default=None, metavar=("FEAT_A", "FEAT_B"), help="SHAP interaction for a pair.")
     p.add_argument("--threshold", choices=["youden", "f1"], default=None, help="Optimize probability threshold by given criterion.")
-    p.add_argument("--tree-plot", nargs="*", type=int, default=None, metavar="IDX", help="Save plot(s) for given tree indices.")
+    p.add_argument("--tree_plot", nargs="*", type=int, default=None, metavar="IDX", help="Save plot(s) for given tree indices.")
     p.add_argument("--surrogate", action="store_true", help="Train shallow surrogate tree and export rules.")
 
     # Params
-    p.add_argument("--n-repeats", type=int, default=20, help="Permutation importance repeats.")
-    p.add_argument("--max-samples", type=int, default=3000, help="Max samples for SHAP computations.")
+    p.add_argument("--n_repeats", type=int, default=20, help="Permutation importance repeats.")
+    p.add_argument("--max_samples", type=int, default=3000, help="Max samples for SHAP computations.")
     p.add_argument("--topk", type=int, default=20, help="Top-k to print for some summaries.")
-    p.add_argument("--surrogate-depth", type=int, default=3, help="Depth for surrogate rules tree.")
+    p.add_argument("--surrogate_depth", type=int, default=3, help="Depth for surrogate rules tree.")
 
     return p
 
@@ -301,6 +309,10 @@ def main():
     _ensure_outdir(args.outdir)
 
     pipe = _load_pipeline(args.model)
+    # # Create a new XGBClassifier instance
+    # pipe = XGBClassifier()
+    # # Load the model from the JSON file
+    # pipe.load_model(args.model)
 
     # Determine which tasks need data:
     needs_Xy = (
@@ -310,20 +322,32 @@ def main():
     )
 
     # Load data if needed
-    X = None
-    y = None
     if needs_Xy:
         if args.data is None:
             print("[ERROR] --data is required for the selected analyses.", file=sys.stderr)
             sys.exit(2)
-        if args.data.lower().endswith(".csv"):
+        # if args.data.lower().endswith(".csv"):
+        if args.data.suffix == (".csv"):
             df = pd.read_csv(args.data)
-        elif args.data.lower().endswith(".parquet"):
+        # elif args.data.lower().endswith(".parquet"):
+        elif args.data.suffix == (".parquet"):
             df = pd.read_parquet(args.data)
         else:
             print("[ERROR] --data must be .csv or .parquet.", file=sys.stderr)
             sys.exit(2)
-        X, y = _infer_feature_frame(df, args.target_col, args.drop_cols)
+        # X, y = _infer_feature_frame(df, args.target_col, args.drop_cols)
+        dataset_parquet = "resources/combined_full.parquet"
+        dataset = pd.read_parquet(dataset_parquet)
+        
+        vals, _, threshold = process_dataset_endpoint(dataset, "logRBA")
+        
+        index_intersection = df.index.intersection(vals.index)
+        X = df.loc[index_intersection]
+        y = (vals.loc[index_intersection] > threshold).squeeze() # binary target based on threshold
+    else:
+        X = None
+        y = None
+
 
     # ----- Run tasks -----
 
