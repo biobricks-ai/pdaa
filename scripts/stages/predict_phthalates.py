@@ -101,11 +101,14 @@ if show_double_plot:
 
 # region HISTOGRAM WITH EXAMPLE PHTHALATES
 # histogram + numbered markers and legend (numbers sorted by prediction)
-display_stat = 'probability'  # 'count' or 'frequency' or 'probability'
+# display_stat = 'density'
+display_stat = 'cumulative'
 if display_stat in ['count', 'frequency', 'probability']:
     ylabel = display_stat.capitalize()
 elif display_stat == 'density':
     ylabel = 'PDF'
+elif display_stat == 'cumulative':
+    ylabel = 'CDF'
 else:
     raise ValueError(f"Invalid display_stat: {display_stat}")
 
@@ -135,7 +138,8 @@ sns.histplot(
     # color='grey',
     color='darkseagreen',
     # alpha=0.4,
-    stat=display_stat,
+    stat='density' if display_stat == 'cumulative' else display_stat,
+    cumulative=(display_stat == 'cumulative'),  # cumulative density function
     ax=ax
 )
 ax.set_xlabel(logRBA_label)  # RBA = relative binding affinity

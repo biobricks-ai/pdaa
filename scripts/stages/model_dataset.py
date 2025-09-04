@@ -462,7 +462,8 @@ if __name__ == "__main__":
 
     # Read the specified dataset
     resourcedir = Path('resources')
-    dataset_parquet = resourcedir / f'{args.dataset}_full.parquet'
+    # dataset_parquet = resourcedir / f'{args.dataset}_full.parquet'
+    dataset_parquet = resourcedir / 'combined_full.bak.0.parquet'
     dataset = pd.read_parquet(dataset_parquet)
 
     cachedir = Path('cache')
