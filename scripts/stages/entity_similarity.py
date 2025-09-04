@@ -24,7 +24,8 @@ from scripts.utils.helpers import (
     is_phthalate,
     is_diester_phthalate,
     phthalate_matches,
-    get_example_phthalates_df
+    get_example_phthalates_df,
+    build_activity_matrix_filled_from_inchis
 )
 
 resourcedir = pathlib.Path('resources')
@@ -485,21 +486,27 @@ def cluster_rows_and_make_heatmap(
     plot_PCA_variance=False,
     mask_method:str = 'prediction',
 ):
-    activity_matrix = phthalate_df.groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
-    activity_matrix = activity_matrix.pivot(index='inchi', columns='title', values='positive_prediction')
+    # activity_matrix = phthalate_df.groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
+    # activity_matrix = activity_matrix.pivot(index='inchi', columns='title', values='positive_prediction')
+    inchis = phthalate_df['inchi'].drop_duplicates().tolist()
 
-    inchi_activity_counts = phthalate_df.reset_index().groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
-    inchi_activity_counts['active'] = inchi_activity_counts['positive_prediction'] > 0.6
-    inchi_activity = inchi_activity_counts.groupby('inchi')['active'].mean().reset_index()
-    inchi_activity.sort_values('active', ascending=True)
-    inchi_activity.to_csv(cachedir / 'inchi_activity.csv', index=False)
+    # inchi_activity_counts = phthalate_df.reset_index().groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
+    # inchi_activity_counts['active'] = inchi_activity_counts['positive_prediction'] > 0.6
+    # inchi_activity = inchi_activity_counts.groupby('inchi')['active'].mean().reset_index()
+    # inchi_activity.sort_values('active', ascending=True)
+    # inchi_activity.to_csv(cachedir / 'inchi_activity.csv', index=False)
 
     # Cluster the data using KMeans instead of hierarchical clustering
     from sklearn.cluster import KMeans
     from scipy.cluster import hierarchy
 
     # Fill any NaN values with 0 for clustering
-    activity_matrix_filled = activity_matrix.fillna(0)
+    activity_matrix_filled = build_activity_matrix_filled_from_inchis(
+        inchis,
+        assay_csv=resourcedir / 'assay_strength.csv',
+        sqlite_path=brickdir / 'predictions.sqlite',
+        table='predictions',
+    )
     print(f"Activity matrix shape: {activity_matrix_filled.shape}")
     # save the filled activitiy matrix
     activity_matrix_filled.to_parquet(cachedir / 'activity_matrix_filled.parquet')

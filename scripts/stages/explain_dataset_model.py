@@ -167,11 +167,19 @@ def partial_dependence_plots(best_pipe, X: pd.DataFrame, features: List[str], ou
         plt.savefig(os.path.join(outdir, f"pdp_{f}.png"), dpi=200)
         plt.close()
 
-def summarize_split_thresholds(best_pipe) -> pd.DataFrame:
+def summarize_split_thresholds(best_pipe, X: pd.DataFrame = None) -> pd.DataFrame:
     """Aggregate split thresholds across all boosted trees."""
     booster = best_pipe.named_steps["clf"].get_booster()
     df = booster.trees_to_dataframe()  # columns: Feature, Split, Gain, Cover, Tree, Node, Yes, No, Missing, etc.
     df = df.dropna(subset=["Feature", "Split"])
+
+    # Get kept feature names from pipeline
+    if X is not None:
+        selector = best_pipe.named_steps["filter_mi"]
+        kept_feature_names = _get_kept_feature_names(selector, X.columns)
+        feature_map = {f"f{i}": name for i, name in enumerate(kept_feature_names)}
+        df["Feature"] = df["Feature"].map(feature_map).fillna(df["Feature"])
+
     summary = (
         df.groupby("Feature")["Split"]
         .agg(["count", "median", "mean"])
@@ -235,7 +243,7 @@ def visualize_one_tree(best_pipe, tree_index=0, outdir: str = ".", dpi=900, figs
     from xgboost import plot_tree  # type: ignore
     _ensure_outdir(outdir)
     fig, ax = plt.subplots(figsize=figsize)
-    plot_tree(best_pipe.named_steps["clf"], num_trees=tree_index, ax=ax)
+    plot_tree(best_pipe.named_steps["clf"], tree_idx=tree_index, ax=ax)
     fig.tight_layout()
     path = os.path.join(outdir, f"tree_{tree_index}.png")
     fig.savefig(path, dpi=dpi)
@@ -354,7 +362,7 @@ def main():
     # Split stats do not require data matrix
     if args.all or args.split_stats:
         try:
-            split_df = summarize_split_thresholds(pipe)
+            split_df = summarize_split_thresholds(pipe, X)
             split_path = os.path.join(args.outdir, "split_thresholds.csv")
             split_df.to_csv(split_path)
             print(f"[OK] Split thresholds saved -> {split_path}")

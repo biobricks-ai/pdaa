@@ -1647,3 +1647,24 @@ def get_example_phthalates_df():
     example_phthalates_df['name'] = example_phthalates_df['name'].str.replace('Dimethyl ', '')
 
     return example_phthalates_df
+
+def get_aligned_score(activity_df: pd.DataFrame, score_parquet: str | Path) -> pd.DataFrame:
+    """
+    Load the score parquet file and align it to the activity DataFrame by InChI.
+
+    Parameters
+    ----------
+    activity_df : pd.DataFrame
+        DataFrame containing activities with InChI as index.
+    score_parquet : str | Path
+        Path to the parquet file containing scores with InChI as index.
+
+    Returns
+    -------
+    pd.DataFrame
+        Aligned score DataFrame with the same index as activity_df.
+    """
+    scores = pd.read_parquet(score_parquet)
+    # Align scores to activity_df by InChI
+    aligned_scores = scores.reindex(activity_df.index)
+    return aligned_scores
