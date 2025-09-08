@@ -437,9 +437,11 @@ def main():
             criterion = args.threshold if args.threshold is not None else "youden"
             try:
                 thr, rep = optimize_probability_threshold(pipe, X, y, criterion=criterion)
-                with open(os.path.join(args.outdir, "threshold_report.json"), "w") as f:
+                report_path = os.path.join(args.outdir, "threshold_report.json")
+                with open(report_path, "w") as f:
                     json.dump(rep, f, indent=2)
                 print(f"[OK] Threshold ({criterion}) = {thr:.4f}")
+                print(f"[OK] Threshold report saved -> {report_path}")
                 print(rep)
             except Exception as e:
                 print(f"[WARN] threshold optimization failed: {e}", file=sys.stderr)
