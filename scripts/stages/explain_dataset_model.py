@@ -98,8 +98,14 @@ def permutation_importance_report(best_pipe, X: pd.DataFrame, y: pd.Series, n_re
     )
     selector = best_pipe.named_steps["filter_mi"]
     feat_names = _get_kept_feature_names(selector, X.columns)
-    s = pd.Series(r.importances_mean, index=feat_names).sort_values(ascending=False)
-    return s
+    # s = pd.Series(r.importances_mean, index=feat_names).sort_values(ascending=False)
+    df = pd.DataFrame({
+        "importance_mean": r.importances_mean,
+        "importance_se": r.importances_std / np.sqrt(n_repeats)
+    }, index=feat_names)
+    df = df.sort_values("importance_mean", ascending=False)
+
+    return df
 
 def shap_global_local(best_pipe, X: pd.DataFrame, max_samples=3000):
     """Compute SHAP values for kept features using TreeExplainer on XGBClassifier."""
@@ -377,7 +383,8 @@ def main():
             try:
                 pi = permutation_importance_report(pipe, X, y, n_repeats=args.n_repeats)
                 pi_path = os.path.join(args.outdir, "permutation_importance.csv")
-                pi.to_csv(pi_path, header=["importance_mean"])
+                # pi.to_csv(pi_path, header=["importance_mean"])
+                pi.to_csv(pi_path)
                 print(f"[OK] Permutation importance saved -> {pi_path}")
                 print(pi.head(args.topk))
             except Exception as e:
