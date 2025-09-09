@@ -14,10 +14,11 @@ def make_safe(func):
             return {"result": None, "error": str(e)}
     return wrapper
 
+chemprop_url = "http://chemprop-transformer-alb-2126755060.us-east-1.elb.amazonaws.com"
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_chemprop_prediction(inchi: str, property_token: str) -> dict:
-    base_url = "http://chemprop-transformer-alb-2126755060.us-east-1.elb.amazonaws.com/predict"
+    base_url = chemprop_url + "/predict"
     params = {"property_token": property_token, "inchi": inchi}
     response = requests.get(base_url, params=params)
     response.raise_for_status()  # Raise exception for bad status codes
@@ -33,14 +34,14 @@ def get_chemprop_prediction_safe(inchi: str, property_token: str, retries: int =
            isinstance(retry_state.outcome.exception(), requests.RequestException))
 )
 def chemprop_predict_all(inchi: str) -> list[dict]:
-    base_url = "http://chemprop-transformer-alb-2126755060.us-east-1.elb.amazonaws.com/predict_all"
+    base_url = chemprop_url + "/predict_all"
     params = {"inchi": inchi}
     response = requests.get(base_url, params=params)
     response.raise_for_status()  # Raise exception for bad status codes
     return response.json()
 
 async def chemprop_predict_all_async(inchi: str) -> dict:
-    base_url = "http://chemprop-transformer-alb-2126755060.us-east-1.elb.amazonaws.com/predict_all"
+    base_url = chemprop_url + "/predict_all"
     params = {"inchi": inchi}
     async with aiohttp.ClientSession() as session:
         async with session.get(base_url, params=params) as response:
@@ -61,7 +62,7 @@ async def get_chemprop_prediction_async(inchi: str, property_token: str, retries
         dict: Dictionary containing 'result' and 'error' keys. Result contains the API response if successful,
               error contains error message if failed.
     """
-    base_url = "http://chemprop-transformer-alb-2126755060.us-east-1.elb.amazonaws.com/predict"
+    base_url = chemprop_url + "/predict"
     params = {
         "property_token": property_token,
         "inchi": inchi
