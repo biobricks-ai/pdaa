@@ -137,7 +137,7 @@ example_inchi2name = {inchi: name for inchi, name in zip(example_inchi, example_
 for name, weight in zip(example_names, example_weights):
     print(f"{name}: {weight:.2f}")
 
-# # run the model on the example phthalates (nly needs to be done once)
+# # run the model on the example phthalates (only needs to be done once)
 # pdaa.predict_all_properties_with_sqlite_cache(example_inchi)
 
 # possible isomers to look for

@@ -20,6 +20,28 @@ from collections.abc import Iterable
 brickdir = pathlib.Path('brick')
 sqlite_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# DATABASE INITIALIZATION (run once per process)
+# ---------------------------------------------------------------------------
+def init_db():
+    brickdir.mkdir(parents=True, exist_ok=True)           # Ensure folder exists
+    db_path = brickdir / 'predictions.sqlite'
+    with sqlite3.connect(db_path) as conn:
+        # WAL is persistent per-DB once set; harmless to run again.
+        conn.execute('PRAGMA journal_mode=WAL;')
+        # Pair with NORMAL for a sane durability/performance tradeoff.
+        conn.execute('PRAGMA synchronous=NORMAL;')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS predictions (
+                inchi               TEXT NOT NULL,
+                property_token      INTEGER NOT NULL,
+                positive_prediction REAL NOT NULL,
+                PRIMARY KEY (inchi, property_token)
+            );
+        ''')
+        # Optional: only if you sometimes query by token alone.
+        # conn.execute('CREATE INDEX IF NOT EXISTS idx_predictions_token ON predictions(property_token);')
+
 cachedir = pathlib.Path('cache') / 'util' / 'pdaa'
 cachedir.mkdir(parents=True, exist_ok=True)
 
@@ -69,8 +91,17 @@ def lookup_predictions(inchi_tok_pairs):
         with sqlite3.connect(brickdir / 'predictions.sqlite') as conn:
             results = []
             for inchi, property_token in inchi_tok_pairs:
-                cursor = conn.execute("""SELECT inchi, CAST(property_token AS INTEGER) as property_token, positive_prediction FROM predictions 
-                                      WHERE inchi = ? AND property_token = ?""", (inchi, property_token))
+                query_lines = [
+                    "SELECT",
+                    "    inchi,",
+                    # "    CAST(property_token AS INTEGER) as property_token,",
+                    "    property_token,",
+                    "    positive_prediction",
+                    "    FROM predictions",
+                    "WHERE inchi = ? AND property_token = ?"
+                ]
+                query = "\n".join(query_lines)
+                cursor = conn.execute(query, (inchi, property_token))
                 result = cursor.fetchone()
                 if result is not None:
                     results.append((inchi, property_token, result[2]))
