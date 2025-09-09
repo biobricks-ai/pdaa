@@ -133,21 +133,62 @@ def shap_global_local(best_pipe, X: pd.DataFrame, max_samples=3000):
     shap_values = explainer.shap_values(X_sub)
     return shap_values, X_trans, feat_names, X_sub
 
-def save_shap_summary_plots(shap_values, X_mat: np.ndarray, feat_names: np.ndarray, outdir: str, prefix: str = "shap"):
+def save_shap_summary_plots(
+    shap_values,
+    X_mat: np.ndarray,
+    feat_names: np.ndarray,
+    outdir: str,
+    prefix: str = "shap",
+    overlay_means: bool = True,
+    mean_segment_height: float = 0.6,
+    mean_line_kwargs: dict | None = None,
+):
     """Save SHAP summary plots (bar and violin)."""
     import shap
+    import matplotlib as mpl
     _ensure_outdir(outdir)
     # Bar
     plt.figure()
     shap.summary_plot(shap_values, X_mat, feature_names=feat_names, plot_type="bar", show=False)
     plt.tight_layout()
-    plt.savefig(os.path.join(outdir, f"{prefix}_summary_bar.png"), dpi=200)
+    plt.savefig(os.path.join(outdir, f"{prefix}_summary_bar.png"), dpi=600)
     plt.close()
     # Violin
     plt.figure()
     shap.summary_plot(shap_values, X_mat, feature_names=feat_names, plot_type="violin", show=False)
+    ax = plt.gca()
+    if overlay_means:
+        # Compute absolute means per feature (same samples used for the plot).
+        mean_by_feat = dict(zip(feat_names, np.mean(np.abs(shap_values), axis=0)))
+
+        # Use the tick positions/labels actually drawn by SHAP (handles reordering/top-k).
+        y_positions = ax.get_yticks()
+        y_labels = [t.get_text() for t in ax.get_yticklabels()]
+
+        seg_half = float(mean_segment_height) / 2.0
+        line_style = {"linewidth": 2, "color": "black", "zorder": 4}
+        if isinstance(mean_line_kwargs, dict):
+            line_style.update(mean_line_kwargs)
+
+        for y, name in zip(y_positions, y_labels):
+            m = mean_by_feat.get(name)
+            if m is None:
+                continue  # label not found in original names; skip gracefully
+            ax.vlines(x=m, ymin=y - seg_half, ymax=y + seg_half, **line_style)
+
+    # --- Rename the colorbar label for consistent capitalization ---
+    fig = plt.gcf()
+    axes = fig.get_axes()
+    if len(axes) > 1:            # SHAP adds the colorbar as a second axes
+        axes[-1].set_ylabel("Feature Value")   # your preferred capitalization
+
+    ax.set_xlabel(
+        "SHAP Value (Impact on Model Output)",
+        # labelpad=6
+    )
+
     plt.tight_layout()
-    plt.savefig(os.path.join(outdir, f"{prefix}_summary_violin.png"), dpi=200)
+    plt.savefig(os.path.join(outdir, f"{prefix}_summary_violin.png"), dpi=600)
     plt.close()
 
 def partial_dependence_plots(best_pipe, X: pd.DataFrame, features: List[str], outdir: str):
@@ -170,7 +211,7 @@ def partial_dependence_plots(best_pipe, X: pd.DataFrame, features: List[str], ou
         plt.ylabel("Partial dependence (model output)")
         plt.title(f"PDP: {f}")
         plt.tight_layout()
-        plt.savefig(os.path.join(outdir, f"pdp_{f}.png"), dpi=200)
+        plt.savefig(os.path.join(outdir, f"pdp_{f}.png"), dpi=600)
         plt.close()
 
 def summarize_split_thresholds(best_pipe, X: pd.DataFrame = None) -> pd.DataFrame:
@@ -432,7 +473,7 @@ def main():
                 plt.ylabel("Count")
                 plt.title("Interaction distribution")
                 plt.tight_layout()
-                plt.savefig(os.path.join(args.outdir, "interaction_hist.png"), dpi=200)
+                plt.savefig(os.path.join(args.outdir, "interaction_hist.png"), dpi=600)
                 plt.close()
                 print(f"[OK] Interaction stats and histogram saved for {pair[0]} x {pair[1]}")
                 print(stats)
