@@ -555,7 +555,7 @@ def main():
     sweep.add_argument("--repeats", type=int, default=5, help="Number of bootstrap repeats per K (default: 5).")
     sweep.add_argument("--bootstrap_frac", type=float, default=0.8,
                        help="Fraction of chemicals to sample with replacement per bootstrap (default: 0.8).")
-    sweep.add_argument("--linkage", type=str, default="average", choices=["complete", "average"],
+    sweep.add_argument("--linkage", type=str, default="average", choices=["complete", "average", "ward"],
                        help="Hierarchical linkage (default: average).")
     sweep.add_argument("--top_n_words", type=int, default=30, help="Global top-N words per cluster for metrics.")
     sweep.add_argument("--emit_perk", action="store_true", help="Write per-K P(k|c) matrices to disk.")
