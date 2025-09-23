@@ -59,7 +59,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -71,10 +71,12 @@ from sklearn.preprocessing import normalize
 
 from tqdm import tqdm
 
-# Optional imports from your repo
 sys.path.append("./")
 from scripts.utils.helpers import zscore_columns
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def _get_assay_distance_fn(cluster_mod):
+    return getattr(cluster_mod, "assay_distance_matrix", _assay_distance_matrix)
 
 # Try to import the clustering helpers to reuse WordCloud behavior for p_c(w)
 def _import_cluster_module(path_hint: Optional[str] = None):
@@ -89,21 +91,6 @@ def _import_cluster_module(path_hint: Optional[str] = None):
             mod = __import__(p.stem)
             return mod
     return None
-
-# --- Fallbacks if repo helpers are unavailable ---
-
-def _zscore_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    """Fallback z-score by column with guard for zero-variance columns."""
-    X = df.copy()
-    mu = X.mean(axis=0)
-    sd = X.std(axis=0, ddof=0)
-    bad = sd <= 0
-    dropped = list(X.columns[bad])
-    X = X.loc[:, ~bad]
-    mu = mu[~bad]; sd = sd[~bad]
-    Xz = (X - mu) / sd
-    Xz = Xz.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    return Xz, dropped
 
 def _assay_distance_matrix(Xz: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """Compute Pearson |r| distance between assays."""
@@ -247,6 +234,7 @@ def compute_metrics_for_labels(
     return run_metrics, P_kc, cluster_members
 
 def load_ed_artifacts(ed_dir: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Load ED artifacts: P(k|w) and Q(w|k)."""
     P_kw = pd.read_csv(Path(ed_dir) / "word_category_posteriors.csv", index_col=0)
     Q = pd.read_csv(Path(ed_dir) / "category_prototypes_q.csv", index_col=0)
     # Ensure consistent orientation: P_kw rows=words, cols=categories; Q rows=categories, cols=words
@@ -257,6 +245,7 @@ def load_ed_artifacts(ed_dir: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     return P_kw, Q
 
 def load_zscored_matrix(matrix_path: str) -> Tuple[pd.DataFrame, List[str], List[str]]:
+    """Load activity matrix and z-score columns."""
     df = pd.read_parquet(matrix_path)
     Xz, dropped = zscore_columns(df)
     if dropped:
@@ -265,12 +254,14 @@ def load_zscored_matrix(matrix_path: str) -> Tuple[pd.DataFrame, List[str], List
     return Xz, assays, dropped
 
 def import_cluster_module_or_die(script_path: str):
+    """Try to import the clustering module or exit with error."""
     mod = _import_cluster_module(script_path)
     if mod is None:
         raise SystemExit("Could not import assay_cluster_toxicity_index.py. Provide --cluster_script with a valid path.")
     return mod
 
 def build_k_list(args) -> List[int]:
+    """Build sorted list of unique K from --k_grid or --k_range."""
     if args.k_grid:
         return list(sorted(set(int(k) for k in args.k_grid)))
     if args.k_range:
@@ -281,6 +272,7 @@ def build_k_list(args) -> List[int]:
     raise SystemExit("Provide either --k_grid or --k_range.")
 
 def preflight_corr_threshold_warning(Xz: pd.DataFrame, args, cluster_mod) -> None:
+    """Warn if --corr_threshold is globally unattainable (min distance > 1 - tau)."""
     if args.corr_threshold is None:
         return
     tau = float(args.corr_threshold)
@@ -306,6 +298,9 @@ def collect_metrics_over_repeats(
     cluster_mod,
     K_list: List[int],
 ) -> Tuple[List[Dict], List[Dict]]:
+    """
+    For each K in K_list, run args.repeats bootstraps and collect metrics.
+    """
     rng = np.random.RandomState(args.random_seed)
     per_run_rows: List[Dict] = []
     per_k_rows: List[Dict] = []
@@ -389,74 +384,6 @@ def collect_metrics_over_repeats(
             for f in as_completed(futures):
                 per_run_rows.extend(f.result())
                 pbar.update(1)
-        # frac = max(min(args.bootstrap_frac, 1.0), 0.05)
-        # n = Xz.shape[0]
-        # idx = rng.randint(0, n, size=max(2, int(round(frac * n))))
-        # Xz_boot = Xz.iloc[idx, :]
-
-        # # Distances for this repeat
-        # if hasattr(cluster_mod, "assay_distance_matrix"):
-        #     _, D_condensed, assays_boot = cluster_mod.assay_distance_matrix(Xz_boot)
-        # else:
-        #     _, D_condensed, assays_boot = _assay_distance_matrix(Xz_boot)
-
-        # # If tau is impossible for this repeat, skip all K for this repeat
-        # if args.corr_threshold is not None:
-        #     tau = float(args.corr_threshold)
-        #     t_allowed = 1.0 - tau
-        #     d_min = float(np.min(D_condensed)) if D_condensed.size else float("inf")
-        #     if (not np.isfinite(d_min)) or d_min > t_allowed + 1e-12:
-        #         logging.info(
-        #             "Skipping repeat r=%d: unattainable corr_threshold τ=%.3f "
-        #             "(d_min=%.3f > 1-τ=%.3f; max|r|<τ)", r, tau, d_min, t_allowed
-        #         )
-        #         continue
-
-        # # Linkage for this repeat
-        # Z = linkage(D_condensed, method=args.linkage, optimal_ordering=True)
-
-        # # Evaluate all Ks on the same dendrogram
-        # for K in K_list:
-        #     # Enforce corr_threshold per K on this repeat (reject this (r,K) only)
-        #     if args.corr_threshold is not None:
-        #         t_k = _threshold_for_k(Z, n_leaves=len(assays_boot), k=K)
-        #         t_allowed = 1.0 - float(args.corr_threshold)
-        #         if t_k > t_allowed + 1e-12:
-        #             logging.debug(
-        #                 "repeat=%d: K=%d violates τ=%.3f (t_K=%.3f > 1-τ=%.3f); skipping (r,K).",
-        #                 r, K, args.corr_threshold, t_k, t_allowed
-        #             )
-        #             continue
-
-        #     # Labels and metrics for this (r,K)
-        #     labels = _labels_for_k(Z, K)
-        #     labels = _relabel_stable(labels)
-        #     run_metrics, Pkc, _members = compute_metrics_for_labels(
-        #         assays=assays_boot, labels=labels, P_kw=P_kw, Q_kw=Q,
-        #         top_n_words=args.top_n_words, cluster_mod=cluster_mod,
-        #     )
-        #     run_metrics.k = K
-        #     run_metrics.repeat = r
-
-        #     # Per-run success: meets per-run criteria (stability is per-K, so not checked here)
-        #     pass_run = (
-        #         (run_metrics.sharp_mean >= args.sharpness_threshold) and
-        #         (run_metrics.sharp_frac >= args.sharpness_frac) and
-        #         (run_metrics.frag_max  <= args.frag_threshold)
-        #     )
-        #     if pass_run:
-        #         per_k_data[K]["success_count"] += 1
-
-        #     per_k_data[K]["metrics_runs"].append(run_metrics)
-        #     per_k_data[K]["Pkc_runs"].append(Pkc)
-        #     per_k_data[K]["label_runs"].append(labels)
-
-        #     per_run_rows.append({
-        #         "K": K, "repeat": r,
-        #         "RE": run_metrics.re_mean, "Sharp": run_metrics.sharp_mean,
-        #         "Sharp_frac": run_metrics.sharp_frac, "Frag_max": run_metrics.frag_max,
-        #         "Pass": int(pass_run)
-        #     })
 
     # Summarize per-K after all repeats
     def agg(vals: List[float]) -> Tuple[float, float]:
@@ -634,6 +561,7 @@ def main():
 
     # Try to import cluster module for WordCloud word matrix
     cluster_mod = import_cluster_module_or_die(args.cluster_script)
+    assay_distance = _get_assay_distance_fn(cluster_mod)
 
     # --- Preflight: if tau is given, warn if globally unattainable (min distance > 1 - tau) ---
     preflight_corr_threshold_warning(Xz, args, cluster_mod)

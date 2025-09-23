@@ -26,6 +26,8 @@ from rdkit.Chem import (
     rdFingerprintGenerator as rfg
 )
 
+import sqlite3
+
 def suppress_rdkit_messages(*, info=True, warnings=True, errors=False):
     from rdkit import RDLogger
     if info:
@@ -1668,3 +1670,69 @@ def get_aligned_score(activity_df: pd.DataFrame, score_parquet: str | Path) -> p
     # Align scores to activity_df by InChI
     aligned_scores = scores.reindex(activity_df.index)
     return aligned_scores
+
+def map_aids_to_assay_names(aids: Iterable[str], con: sqlite3.Connection) -> pd.DataFrame:
+    """
+    Map activity IDs (AIDs) to human-readable assay names using the cvae.sqlite schema.
+    Joins temp_aids (input) -> activity.activity_id -> property.property_id -> property.title.
+
+    Parameters
+    ----------
+    con : sqlite3.Connection
+        Open SQLite connection to cvae.sqlite.
+    aids : Iterable[str]
+        Iterable of 32-hex AIDs to resolve.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ['aid', 'assay_name'].
+        Unmatched AIDs will have assay_name = None.
+
+    Notes
+    -----
+    - Uses a TEMP table for scalable, parameterized joining.
+    - De-duplicates input AIDs on insert to avoid constraint errors.
+    - TODO: If needed, extend to also return property_token or categories.
+    """
+    # Normalize and de-duplicate inputs up front
+    aids_series = pd.Series(list(aids), dtype="string").dropna().drop_duplicates()
+    if aids_series.empty:
+        return pd.DataFrame({"aid": pd.Series(dtype="string"), "assay_name": pd.Series(dtype="string")})
+
+    with con:  # single transaction for speed and atomicity
+        con.execute("DROP TABLE IF EXISTS temp_aids;")
+        con.execute("CREATE TEMP TABLE temp_aids(aid TEXT PRIMARY KEY);")
+
+        # Chunked insert to avoid hitting SQLite parameter limits with very large inputs
+        chunk = 10000
+        data = [(a,) for a in aids_series.tolist()]
+        for i in range(0, len(data), chunk):
+            con.executemany("INSERT OR IGNORE INTO temp_aids(aid) VALUES (?);", data[i:i+chunk])
+
+    sql = """
+    WITH p1 AS (
+    SELECT property_id, MIN(title) AS title
+    FROM property
+    GROUP BY property_id
+    )
+    SELECT t.aid,
+        p1.title AS assay_name
+    FROM temp_aids t
+    LEFT JOIN activity a
+        ON a.activity_id = t.aid
+    LEFT JOIN p1
+        ON p1.property_id = a.property_id
+    """
+    mapping = pd.read_sql(sql, con).astype({"aid":"string","assay_name":"string"})
+
+    # Ensure one row per aid to avoid the duplicate-label reindex error
+    mapping = mapping.drop_duplicates(subset=["aid"])
+
+    # Preserve the 'aid' column name through reindex/reset_index
+    mapping = (mapping
+            .set_index("aid")
+            .reindex(aids_series.rename("aid"))
+            .reset_index())
+
+    return mapping
