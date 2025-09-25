@@ -598,32 +598,44 @@ def plot_activity_boxplot_lcb_isomer(
             constrained_layout=True     # auto-tight layout
         )
 
-        # Use normalized names so this works when only a subset (e.g., ortho/tere) is present
-        df['group'] = df['lcb_group'] + "_" + df['IsomerName']
+        # # Use normalized names so this works when only a subset (e.g., ortho/tere) is present
+        # df['group'] = df['lcb_group'] + "_" + df['IsomerName']
 
-        groups = [d["mean_activity"].values for _, d in df.groupby("group")]
-        group_labels = df["group"].unique()
+        # groups = [d["mean_activity"].values for _, d in df.groupby("group")]
+        # group_labels = df["group"].unique()
         
-        H, p_kw = kruskal(*groups)
-        print(f"Kruskal-Wallis test: H={H:.3f}, p={p_kw:.3g}")
+        # H, p_kw = kruskal(*groups)
+        # print(f"Kruskal-Wallis test: H={H:.3f}, p={p_kw:.3g}")
 
-        # p_mat = sp.posthoc_dunn(
+        # # p_mat = sp.posthoc_dunn(
+        # p_mat = sp.posthoc_conover(
+        #     df,
+        #     val_col="mean_activity",
+        #     group_col="group",
+        #     p_adjust="holm"
+        # )
+        # order = sorted(p_mat.index, key=lambda s: (s.startswith('5'), s))
+        # p_mat = p_mat.loc[order, order]
+        
+        # Set a single, explicit order for both panels; reuse it everywhere
+        ordered_groups = (
+            df['lcb_group'].unique().tolist()  # e.g., ["3−","4–6","7+"]
+        )
+        ordered_groups = [f"{g}_{iso}" for g in ordered_groups for iso in ["ortho","tere"] if ((df['lcb_group']==g) & (df['IsomerName']==iso)).any()]
+
+        df['group'] = pd.Categorical(df['lcb_group'] + "_" + df['IsomerName'],
+                                    categories=ordered_groups, ordered=True)
+
+        # Now Conover computes in that order; no reindexing needed
         p_mat = sp.posthoc_conover(
             df,
             val_col="mean_activity",
             group_col="group",
             p_adjust="holm"
         )
-        # p_mat.index = group_labels; p_mat.columns = group_labels   # nice ordering
-        order = sorted(p_mat.index, key=lambda s: (s.startswith('5'), s))
-        p_mat = p_mat.loc[order, order]
 
-        # mask = np.triu(np.ones_like(p_mat, dtype=bool))   # show lower triangle only
         sns.heatmap(
-            # remove_masked_values(p_mat, mask),
             **clean_matrix(p_mat),
-            # p_mat,
-            # mask=mask,
             annot=True,
             fmt=".2g",
             cmap="viridis_r",
@@ -631,39 +643,35 @@ def plot_activity_boxplot_lcb_isomer(
             vmin=0, vmax=1,
             ax=axdict['p'],
         )
-        # axdict['p'].set_title("Dunn-Holm pairwise comparisons")
         axdict['p'].set_title("Conover-Iman pairwise comparisons")
         axdict['p'].set_ylabel("") ; axdict['p'].set_xlabel("")
-        # plt.savefig(outdir / "Dunn_Holm.png")
-        # plt.show()
 
-        effect = np.full(p_mat.shape, np.nan)
-        for i, gi in enumerate(group_labels):
-            for j, gj in enumerate(group_labels):
+        # --- FIX: compute δ using the SAME ordered labels as p_mat ---
+        ordered_labels = list(p_mat.index)
+        effect = np.full((len(ordered_labels), len(ordered_labels)), np.nan)
+        for i, gi in enumerate(ordered_labels):
+            ai = df.loc[df.group == gi, "mean_activity"]
+            for j, gj in enumerate(ordered_labels):
                 if i < j:
-                    # d = pg.cliffs_delta(
-                    d, _ = cliffs_delta(
-                        df.loc[df.group==gi, "mean_activity"],
-                        df.loc[df.group==gj, "mean_activity"],
-                        # eftype="cliffs"
-                    )
-                    effect[i, j] = effect[j, i] = d
+                    aj = df.loc[df.group == gj, "mean_activity"]
+                    d, _ = cliffs_delta(ai, aj)
+                    effect[i, j] = d
+                    effect[j, i] = -d
 
-        eff_df = pd.DataFrame(effect, index=order, columns=order)
-        # 
-        # mask = np.triu(np.ones_like(eff_df, dtype=bool))   # hide upper triangle
+        eff_df = pd.DataFrame(effect, index=ordered_labels, columns=ordered_labels)
+
         sns.heatmap(
-            # remove_masked_values(eff_df, mask),
             **clean_matrix(eff_df),
-            # eff_df,
-            # mask=mask,
+            # eff_df,  # optional: show full matrix
+            vmin=0, vmax=1,
             annot=True, fmt=".2f", cmap="coolwarm", center=0,
-            cbar_kws={"label": "Cliff's δ"},
+            cbar_kws={
+                "label": "Cliff's δ",
+            },
             ax=axdict['delta'],
         )
         axdict['delta'].set_title("Effect-size matrix (Cliff's δ)")
-        # plt.savefig(outdir / "Cliffs.png")
-        # plt.show()
+
 
     # Determine isomer order dynamically (works for a subset like ['ortho','tere'])
     canonical = ['ortho', 'iso', 'tere', 'unknown']

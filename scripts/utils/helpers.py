@@ -1674,12 +1674,15 @@ def get_aligned_score(activity_df: pd.DataFrame, score_parquet: str | Path) -> p
 def map_aids_to_assay_names(aids: Iterable[str], con: sqlite3.Connection) -> pd.DataFrame:
     """
     Map activity IDs (AIDs) to human-readable assay names using the cvae.sqlite schema.
-    Joins temp_aids (input) -> activity.activity_id -> property.property_id -> property.title.
+    Joins input AIDs -> activity.activity_id -> property.property_id -> property.title.
+
+    This version does not write to the database (read-only). It uses a VALUES CTE and
+    chunking under SQLite's parameter limit to avoid temp tables.
 
     Parameters
     ----------
     con : sqlite3.Connection
-        Open SQLite connection to cvae.sqlite.
+        Open SQLite connection to cvae.sqlite (may be read-only).
     aids : Iterable[str]
         Iterable of 32-hex AIDs to resolve.
 
@@ -1688,51 +1691,60 @@ def map_aids_to_assay_names(aids: Iterable[str], con: sqlite3.Connection) -> pd.
     pd.DataFrame
         Columns: ['aid', 'assay_name'].
         Unmatched AIDs will have assay_name = None.
-
-    Notes
-    -----
-    - Uses a TEMP table for scalable, parameterized joining.
-    - De-duplicates input AIDs on insert to avoid constraint errors.
-    - TODO: If needed, extend to also return property_token or categories.
     """
-    # Normalize and de-duplicate inputs up front
-    aids_series = pd.Series(list(aids), dtype="string").dropna().drop_duplicates()
+    # Normalize and de-duplicate inputs up front; preserve order later
+    aids_series = pd.Series(list(aids), dtype="string").dropna().drop_duplicates(keep="first")
     if aids_series.empty:
         return pd.DataFrame({"aid": pd.Series(dtype="string"), "assay_name": pd.Series(dtype="string")})
 
-    with con:  # single transaction for speed and atomicity
-        con.execute("DROP TABLE IF EXISTS temp_aids;")
-        con.execute("CREATE TEMP TABLE temp_aids(aid TEXT PRIMARY KEY);")
-
-        # Chunked insert to avoid hitting SQLite parameter limits with very large inputs
-        chunk = 10000
-        data = [(a,) for a in aids_series.tolist()]
-        for i in range(0, len(data), chunk):
-            con.executemany("INSERT OR IGNORE INTO temp_aids(aid) VALUES (?);", data[i:i+chunk])
-
-    sql = """
+    # Pre-aggregate property titles once per query (keeps semantics identical to original p1 CTE)
+    p1_cte = """
     WITH p1 AS (
-    SELECT property_id, MIN(title) AS title
-    FROM property
-    GROUP BY property_id
+        SELECT property_id, MIN(title) AS title
+        FROM property
+        GROUP BY property_id
     )
-    SELECT t.aid,
-        p1.title AS assay_name
-    FROM temp_aids t
-    LEFT JOIN activity a
-        ON a.activity_id = t.aid
-    LEFT JOIN p1
-        ON p1.property_id = a.property_id
     """
-    mapping = pd.read_sql(sql, con).astype({"aid":"string","assay_name":"string"})
 
-    # Ensure one row per aid to avoid the duplicate-label reindex error
+    # SQLite's default max bound params is ~999; we use a safe chunk allowing one param per AID
+    max_params = 900
+
+    frames = []
+
+    # Helper to run a chunk using VALUES(...) to avoid any writes
+    def run_chunk(values: list[str]) -> pd.DataFrame:
+        placeholders = ",".join(["(?)"] * len(values))
+        sql = (
+            p1_cte
+            + f"""
+            , input(aid) AS (VALUES {placeholders})
+            SELECT input.aid,
+                   p1.title AS assay_name
+            FROM input
+            LEFT JOIN activity a
+              ON a.activity_id = input.aid
+            LEFT JOIN p1
+              ON p1.property_id = a.property_id
+            """
+        )
+        # pandas.read_sql_query will bind params in order
+        return pd.read_sql_query(sql, con, params=values).astype({"aid": "string", "assay_name": "string"})
+
+    data = aids_series.tolist()
+    for i in range(0, len(data), max_params):
+        chunk_vals = data[i : i + max_params]
+        frames.append(run_chunk(chunk_vals))
+
+    mapping = pd.concat(frames, ignore_index=True)
+
+    # Ensure one row per aid (in case of duplicates arising from joins, though LEFT JOIN should be unique)
     mapping = mapping.drop_duplicates(subset=["aid"])
 
-    # Preserve the 'aid' column name through reindex/reset_index
-    mapping = (mapping
-            .set_index("aid")
-            .reindex(aids_series.rename("aid"))
-            .reset_index())
+    # Restore original input order and include any missing as NaN
+    mapping = (
+        mapping.set_index("aid")
+        .reindex(aids_series.rename("aid"))
+        .reset_index()
+    )
 
     return mapping
