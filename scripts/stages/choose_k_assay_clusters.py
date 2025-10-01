@@ -330,20 +330,50 @@ def collect_metrics_over_repeats(
                 )
                 return []
 
+        # # Linkage for this repeat
+        # Z = linkage(D_condensed, method=args.linkage, optimal_ordering=True)
+
+        # results = []
+        # # Evaluate all Ks on the same dendrogram
+        # for K in K_list:
+        #     # Enforce corr_threshold per K on this repeat (reject this (r,K) only)
+        #     if args.corr_threshold is not None:
+        #         t_k = _threshold_for_k(Z, n_leaves=len(assays_boot), k=K)
+        #         t_allowed = 1.0 - float(args.corr_threshold)
+        #         if t_k > t_allowed + 1e-12:
+        #             logging.debug(
+        #                 "repeat=%d: K=%d violates τ=%.3f (t_K=%.3f > 1-τ=%.3f); skipping (r,K).",
+        #                 r, K, args.corr_threshold, t_k, t_allowed
+        #             )
+        #             continue
+
         # Linkage for this repeat
         Z = linkage(D_condensed, method=args.linkage, optimal_ordering=True)
+        D_sq = squareform(D_condensed, checks=False)  # 2D distance matrix (1 - |corr|)
 
         results = []
         # Evaluate all Ks on the same dendrogram
         for K in K_list:
             # Enforce corr_threshold per K on this repeat (reject this (r,K) only)
             if args.corr_threshold is not None:
-                t_k = _threshold_for_k(Z, n_leaves=len(assays_boot), k=K)
+                # Evaluate the gate from the partition, not dendrogram heights.
+                labels_preview = _labels_for_k(Z, K)
+                # Compute max pairwise intra-cluster distance across clusters.
                 t_allowed = 1.0 - float(args.corr_threshold)
-                if t_k > t_allowed + 1e-12:
+                too_large = False
+                for c in np.unique(labels_preview):
+                    members = np.where(labels_preview == c)[0]
+                    if members.size >= 2:
+                        sub = D_sq[np.ix_(members, members)]
+                        w = np.max(sub[np.triu_indices_from(sub, k=1)])
+                        if w > t_allowed + 1e-12:
+                            too_large = True
+                            break
+                
+                if too_large:
                     logging.debug(
-                        "repeat=%d: K=%d violates τ=%.3f (t_K=%.3f > 1-τ=%.3f); skipping (r,K).",
-                        r, K, args.corr_threshold, t_k, t_allowed
+                        "repeat=%d: K=%d violates τ=%.3f (max intra-cluster dist=%.3f > 1-τ=%.3f); skipping (r,K).",
+                        r, K, args.corr_threshold, w, t_allowed
                     )
                     continue
 

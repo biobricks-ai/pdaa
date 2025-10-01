@@ -858,13 +858,15 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
     if linear_model is None:
         key_descriptors = [
             'Rgyr', 'RotB', 'BranchingRatio',
-            'Fsp3', 'Kappa1', 'TPSA',
+            # 'Fsp3', 'Kappa1', 'TPSA',
+            'LongestCarbonBackbone', 'Kappa1', 'TPSA',
             'MolWt', 'cLogP', 'Isomer',
         ]
     else:
         key_descriptors = [
             'Rgyr', 'RotB', 'BranchingRatio',
-            'Fsp3', 'LinearModel', 'Kappa1',
+            # 'Fsp3', 'LinearModel', 'Kappa1',
+            'LongestCarbonBackbone', 'LinearModel', 'Kappa1',
             'MolWt', 'cLogP', 'Isomer',
         ]
     descriptors_to_labels = {
@@ -891,11 +893,64 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
     fig, axes = plt.subplots(nrows=3, ncols=3, figsize=(15, 15))
     axes = axes.flatten()
     Y = activity_df.mean(axis=1)  # mean activity across all assays
+    # default_color = 'tab:blue'  # light blue
+    default_color = '#61b2d8'  # light blue
     for i, descriptor in enumerate(key_descriptors):
         ax = axes[i]
         x = descriptor_df[descriptor]
-        if descriptor in ['LinearModel', 'Isomer']:
+        # if descriptor in ['LinearModel', 'Isomer', 'LongestCarbonBackbone',]:
+        if descriptor in ['LinearModel', 'LongestCarbonBackbone',]:
+            sns.regplot(
+                x=x,
+                y=Y,
+                fit_reg=True,
+                ci=95,
+                scatter_kws={
+                    'alpha': 0.5,
+                    'edgecolors': 'white',
+                    'color': 'green' if descriptor == 'LinearModel' else default_color
+                },
+                line_kws={'color': 'black', 'lw': 2},                    
+                ax=ax
+            )
+            # Set xtick steps to 0.05
             if descriptor == 'LinearModel':
+                import matplotlib.ticker as mticker
+                ax.xaxis.set_major_locator(mticker.MultipleLocator(0.05))
+        elif descriptor == 'Isomer':
+
+            if isomer_boxplot:
+                # Categorical: use a boxplot for Isomer instead of scatter/regression
+                tmp = pd.DataFrame({"Isomer": x, "mean_activity": Y}).dropna()
+                present_isomer_ints = np.sort(tmp["Isomer"].unique())
+                full_isomers = {0: "ortho", 1: "iso", 2: "tere"}  # ensure the order is consistent
+                labels = [full_isomers[i] for i in present_isomer_ints]
+                
+                sns.boxplot(
+                    data=tmp,
+                    x="Isomer",
+                    y="mean_activity",
+                    order=present_isomer_ints,
+                    showfliers=False,
+                    # palette='Set2',
+                    color='#61b2d8',
+                    ax=ax,
+                )
+                ax.set_xticklabels(labels)
+
+                # Overlay per-category means as markers
+                means = (
+                    tmp.groupby("Isomer")["mean_activity"]
+                    .mean()
+                    .reindex(present_isomer_ints)
+                )
+                xs = [i for i, m in enumerate(means) if pd.notna(m)]
+                ys = [m for m in means if pd.notna(m)]
+                ax.scatter(xs, ys, marker="D", s=60, zorder=3, color='black')  # diamond markers at means
+
+                ax.set_xticklabels(labels)
+            else:
+                # Regression plot for isomer type
                 sns.regplot(
                     x=x,
                     y=Y,
@@ -904,60 +959,10 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
                     scatter_kws={
                         'alpha': 0.5,
                         'edgecolors': 'white',
-                        'color': 'green'
                     },
-                    line_kws={'color': 'black', 'lw': 2},                    
+                    line_kws={'color': 'black', 'lw': 2},
                     ax=ax
                 )
-                # Set xtick steps to 0.05
-                import matplotlib.ticker as mticker
-                ax.xaxis.set_major_locator(mticker.MultipleLocator(0.05))
-            elif descriptor == 'Isomer':
-
-                if isomer_boxplot:
-                    # Categorical: use a boxplot for Isomer instead of scatter/regression
-                    tmp = pd.DataFrame({"Isomer": x, "mean_activity": Y}).dropna()
-                    present_isomer_ints = np.sort(tmp["Isomer"].unique())
-                    full_isomers = {0: "ortho", 1: "iso", 2: "tere"}  # ensure the order is consistent
-                    labels = [full_isomers[i] for i in present_isomer_ints]
-                    
-                    sns.boxplot(
-                        data=tmp,
-                        x="Isomer",
-                        y="mean_activity",
-                        order=present_isomer_ints,
-                        showfliers=False,
-                        # palette='Set2',
-                        color="#61b2d8",
-                        ax=ax,
-                    )
-                    ax.set_xticklabels(labels)
-
-                    # Overlay per-category means as markers
-                    means = (
-                        tmp.groupby("Isomer")["mean_activity"]
-                        .mean()
-                        .reindex(present_isomer_ints)
-                    )
-                    xs = [i for i, m in enumerate(means) if pd.notna(m)]
-                    ys = [m for m in means if pd.notna(m)]
-                    ax.scatter(xs, ys, marker="D", s=60, zorder=3, color='black')  # diamond markers at means
-
-                    ax.set_xticklabels(labels)
-                else:
-                    # Regression plot for isomer type
-                    sns.regplot(
-                        x=x,
-                        y=Y,
-                        fit_reg=True,
-                        ci=95,
-                        scatter_kws={
-                            'alpha': 0.5,
-                            'edgecolors': 'white',
-                        },
-                        line_kws={'color': 'black', 'lw': 2},
-                        ax=ax
-                    )
             
         else:
             sns.regplot(
