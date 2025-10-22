@@ -41,14 +41,21 @@ def suppress_rdkit_messages(*, info=True, warnings=True, errors=False):
 SMARTS_PATTERNS = {
     # Ortho-phthalic acid di-ester
     "ortho_phthalate": "c1cc(C(=O)[O;H0])c(C(=O)[O;H0])cc1",
-    # Any ortho acid, mono-, or di-ester; R = H or any group
-    "ortho_any":   "c1cc(C(=O)O[*])c(C(=O)O[*])cc1",
     # Meta-phthalic acid di-ester (a.k.a., isophthalate)
     "meta_phthalate": "c1cc(C(=O)[O;H0])cc(C(=O)[O;H0])c1",
-    # Any meta acid, mono-, or di-ester; R = H or any group
-    "meta_any": "c1cc(C(=O)O[*])cc(C(=O)O[*])c1",
     # Para-phthalic acid di-ester (a.k.a., terephthalate)
     "para_phthalate": "c1c(C(=O)[O;H0])ccc(C(=O)[O;H0])c1",
+
+    # # Diester-only: each carboxyl must be an ester –C(=O)–O–C(alkyl/aryl),
+    # # and the ester O must *not* be bound to a carbonyl carbon (excludes anhydrides).
+    # "ortho_phthalate": "c1cc(C(=O)[OX2][#6;!$(=O)])c(C(=O)[OX2][#6;!$(=O)])cc1",
+    # "meta_phthalate":  "c1cc(C(=O)[OX2][#6;!$(=O)])cc(C(=O)[OX2][#6;!$(=O)])c1",
+    # "para_phthalate":  "c1c(C(=O)[OX2][#6;!$(=O)])ccc(C(=O)[OX2][#6;!$(=O)])c1",
+
+    # Any ortho acid, mono-, or di-ester; R = H or any group
+    "ortho_any":   "c1cc(C(=O)O[*])c(C(=O)O[*])cc1",
+    # Any meta acid, mono-, or di-ester; R = H or any group
+    "meta_any": "c1cc(C(=O)O[*])cc(C(=O)O[*])c1",
     # Any para acid, mono-, or di-ester; R = H or any group
     "para_any": "c1c(C(=O)O[*])ccc(C(=O)O[*])c1",
 }

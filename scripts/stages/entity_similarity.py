@@ -785,7 +785,8 @@ def cluster_rows_and_make_heatmap(
     # ─── Move the y-axis label (“Diester Phthalates”) to the left side ───────────
     g.ax_heatmap.yaxis.set_label_position('left')
     g.ax_heatmap.set_ylabel(
-        'Diester Phthalates',
+        'Phthalates',
+        # 'Diester Phthalates',
         # 'Ortho-Phthalates',
         # 'Terephthalates',
         # 'Isophthalates',
