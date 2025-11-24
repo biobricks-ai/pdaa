@@ -403,7 +403,7 @@ def write_xgb_classifier_feature_selection(
                 model_save_path = outdir / f'xgb_classifier_logRBA_model{save_path_suffix}.json'
             else:
                 model_save_path = None
-                continue  # only process logRBA for now
+                # continue  # only process logRBA for now
 
             _, metrics, imp_series = get_xgb_classifier_feature_selection(
                 X,
