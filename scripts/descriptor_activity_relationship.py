@@ -1,5 +1,6 @@
 import argparse
 from typing import List, Set
+import hashlib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,6 +10,9 @@ from rdkit.Chem import AllChem
 # from skmisc.loess import loess               # pip install scikit-misc
 from tqdm import tqdm
 import statsmodels.api as sm
+
+from adjustText import adjust_text
+
 
 import sys
 sys.path.append('./')  # so utility scripts can be found
@@ -120,6 +124,112 @@ def get_oob_score(X: pd.DataFrame, Y: pd.DataFrame) -> float:
     rf = RandomForestRegressor(n_estimators=500, oob_score=True, n_jobs=-1)
     rf.fit(X, Y)
     print(f"Random Forest OOB Score: {rf.oob_score_}")
+
+
+def _stable_jitter(
+        key: str,
+        width: float = 0.13,
+    ) -> float:
+    """
+    Deterministic horizontal jitter in [-width, width] based on a stable hash of 'key'.
+    Mirrors the behavior used in the ring stripchart helper.
+    """
+    h = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
+    u = int.from_bytes(h, "big") / 2**64
+    return (u * 2.0 - 1.0) * width
+
+
+def _add_elbow_label(
+        ax: plt.Axes,
+        x_anchor: float,
+        y_anchor: float,
+        text: str,
+        dx: float = -0.45,
+        dy: float = 0.06,
+    ) -> None:
+    """
+    Draw an upright label with a simple elbow leader pointing to (x_anchor, y_anchor).
+
+    The elbow approximates:
+          label text
+         /
+    x___/
+    """
+    ax.annotate(
+        text,
+        xy=(x_anchor, y_anchor),
+        xytext=(x_anchor + dx, y_anchor + dy),
+        ha="right",
+        va="bottom",
+        fontsize=9,
+        bbox=dict(
+            facecolor="white",
+            alpha=0.85,
+            edgecolor="none",
+            boxstyle="round,pad=0.2",
+        ),
+        arrowprops=dict(
+            arrowstyle="-",
+            color="black",
+            lw=0.8,
+            shrinkA=2,
+            shrinkB=0,
+            connectionstyle="angle3,angleA=0,angleB=90",
+        ),
+        zorder=12,
+    )
+
+
+def load_example_phthalates_points(
+        csv_path: Path,
+        descriptor_df: pd.DataFrame,
+        activity_df: pd.DataFrame,
+    ) -> pd.DataFrame:
+    """
+    Load example phthalates from CSV and align them with descriptor and activity tables.
+
+    Returns a DataFrame with columns:
+    ['name', 'inchi', 'LongestCarbonBackbone', 'Isomer', 'mean_activity'].
+    Only rows whose InChI matches both descriptor_df and activity_df indices are kept.
+    """
+    if not csv_path.exists():
+        raise FileNotFoundError(csv_path)
+
+    ph_df = pd.read_csv(csv_path)
+    col_map = {c.lower(): c for c in ph_df.columns}
+    required = {"name", "inchi"}
+    missing = required - set(col_map)
+    if missing:
+        raise ValueError(f"CSV is missing required columns: {sorted(missing)}")
+
+    name_col = col_map["name"]
+    inchi_col = col_map["inchi"]
+
+    rows = []
+    for _, row in ph_df.iterrows():
+        name = str(row[name_col]).strip()
+        inchi = str(row[inchi_col]).strip()
+        if not inchi:
+            continue
+        if inchi not in descriptor_df.index or inchi not in activity_df.index:
+            continue
+
+        lcb = descriptor_df.at[inchi, "LongestCarbonBackbone"]
+        isomer = descriptor_df.at[inchi, "Isomer"] if "Isomer" in descriptor_df.columns else None
+        mean_activity = activity_df.loc[inchi].mean(skipna=True)
+
+        rows.append(
+            {
+                "name": name,
+                "inchi": inchi,
+                "LongestCarbonBackbone": lcb,
+                "Isomer": isomer,
+                "mean_activity": mean_activity,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
 
 def plot_activity_scatter_lcb(descriptor_df: pd.DataFrame, activity_df: pd.DataFrame):
     """
@@ -431,36 +541,19 @@ def plot_activity_boxplot_lcb_isomer(
         point_kwargs: dict | None = None,
         do_stat_tests: bool = False,
         outdir: Path,
+        example_phthalates: pd.DataFrame | None = None,
     ) -> plt.Axes:
     """
     Draw a grouped boxplot of mean activity values.
 
     Groups:
-      - X-axis: Longest Carbon Backbone (LCB) length, capped at `lcb_max` (default 6)
+      - X-axis: Longest Carbon Backbone (LCB) length, grouped by `range_sets`
       - Hue: Isomer class (0=ortho, 1=iso, 2=tere)
 
-    Parameters
-    ----------
-    descriptor_df : DataFrame
-        Must contain 'LongestCarbonBackbone' and 'Isomer' columns.
-    activity_df   : DataFrame
-        Rows = compounds, columns = assays; numeric activity values.
-    lcb_max       : int, default 6
-        Highest LCB value to display (inclusive).
-    ax            : matplotlib axis (optional)
-        If None, a new figure/axis is created.
-    palette       : seaborn palette name or list of colors.
-    show_points   : bool, default False
-        Overlay jittered individual points when True.
-    point_jitter  : float, default 0.15
-        Half-width of horizontal jitter applied to points.
-    point_kwargs  : dict, default None
-        Extra kwargs forwarded to ax.scatter for points.
-
-    Returns
-    -------
-    ax : matplotlib.axes.Axes
-        Axis containing the rendered plot.
+    Optionally overlays:
+      - jittered individual compound points (show_points=True)
+      - specific example phthalates via `example_phthalates`, which should contain
+        columns: ['name', 'inchi', 'LongestCarbonBackbone', 'Isomer', 'mean_activity'].
     """
     # ------------------------------------------------------------
     # 1. Assemble a tidy frame with compound-level mean activities
@@ -471,12 +564,6 @@ def plot_activity_boxplot_lcb_isomer(
         .assign(mean_activity=compound_mean)
         .dropna(subset=['LongestCarbonBackbone', 'Isomer'])
     )
-
-    # # keep only LCB ≤ lcb_max
-    # df = df[df['LongestCarbonBackbone'] <= lcb_max]
-
-    # # keep only LCB ≥ lcb_min
-    # df = df[df['LongestCarbonBackbone'] >= lcb_min]
 
     if range_sets is None:
         # cap any LCBs below lcb_min at a single underflow bin (e.g. 0)
@@ -570,19 +657,10 @@ def plot_activity_boxplot_lcb_isomer(
     if do_stat_tests:
         from scipy.stats import kruskal
         import scikit_posthocs as sp
-        # import pingouin as pg
         from cliffs_delta import cliffs_delta
-
-        # def remove_masked_values(mat: pd.DataFrame, mask) -> pd.DataFrame:
-        #     rows_to_keep, cols_to_keep = np.where(~mask)
-        #     rows_to_keep = np.unique(rows_to_keep)
-        #     cols_to_keep = np.unique(cols_to_keep)
-        #     mat_filtered = mat.iloc[rows_to_keep, cols_to_keep]
-        #     return mat_filtered
 
         def clean_matrix(mat: pd.DataFrame):
             # first remove the top row and right column
-            # mat_cleaned = mat.iloc[:-1, :-1]
             mat_cleaned = mat.iloc[1:, :-1]
             # mask upper triangle
             mask = np.triu(np.ones_like(mat_cleaned, dtype=bool), k=1)
@@ -594,29 +672,10 @@ def plot_activity_boxplot_lcb_isomer(
         fig, axdict = plt.subplot_mosaic(
             [['box', 'box'],             # top row: the boxplot spans both columns
             ['p',   'delta']],          # bottom row: Dunn–Holm | Cliff’s Δ
-            figsize=(12, 10),            # tweak size as you like
+            figsize=(14, 10),            # tweak size as you like
             constrained_layout=True     # auto-tight layout
         )
 
-        # # Use normalized names so this works when only a subset (e.g., ortho/tere) is present
-        # df['group'] = df['lcb_group'] + "_" + df['IsomerName']
-
-        # groups = [d["mean_activity"].values for _, d in df.groupby("group")]
-        # group_labels = df["group"].unique()
-        
-        # H, p_kw = kruskal(*groups)
-        # print(f"Kruskal-Wallis test: H={H:.3f}, p={p_kw:.3g}")
-
-        # # p_mat = sp.posthoc_dunn(
-        # p_mat = sp.posthoc_conover(
-        #     df,
-        #     val_col="mean_activity",
-        #     group_col="group",
-        #     p_adjust="holm"
-        # )
-        # order = sorted(p_mat.index, key=lambda s: (s.startswith('5'), s))
-        # p_mat = p_mat.loc[order, order]
-        
         # Set a single, explicit order for both panels; reuse it everywhere
         ordered_groups = (
             df['lcb_group'].unique().tolist()  # e.g., ["3−","4–6","7+"]
@@ -626,7 +685,6 @@ def plot_activity_boxplot_lcb_isomer(
         df['group'] = pd.Categorical(df['lcb_group'] + "_" + df['IsomerName'],
                                     categories=ordered_groups, ordered=True)
 
-        # Now Conover computes in that order; no reindexing needed
         p_mat = sp.posthoc_conover(
             df,
             val_col="mean_activity",
@@ -662,15 +720,27 @@ def plot_activity_boxplot_lcb_isomer(
 
         sns.heatmap(
             **clean_matrix(eff_df),
-            # eff_df,  # optional: show full matrix
-            vmin=0, vmax=1,
-            annot=True, fmt=".2f", cmap="coolwarm", center=0,
+            # vmin=0, vmax=1,
+            vmin=-1, vmax=1,
+            annot=True, fmt=".2f", cmap="bwr", center=0,
             cbar_kws={
                 "label": "Cliff's δ",
             },
             ax=axdict['delta'],
         )
         axdict['delta'].set_title("Effect-size matrix (Cliff's δ)")
+
+        # Rotate heatmap tick labels (subfigures B and C) to avoid overlap
+        for ax_hm in (axdict['p'], axdict['delta']):
+            plt.setp(
+                ax_hm.get_xticklabels(),
+                rotation=45,
+                ha="right",
+            )
+            plt.setp(
+                ax_hm.get_yticklabels(),
+                rotation=0,
+            )
 
 
     # Determine isomer order dynamically (works for a subset like ['ortho','tere'])
@@ -694,7 +764,6 @@ def plot_activity_boxplot_lcb_isomer(
 
     sns.boxplot(
         data=df,
-        # x='LongestCarbonBackbone',
         x='lcb_group',
         y='mean_activity',
         hue='IsomerName',
@@ -706,20 +775,18 @@ def plot_activity_boxplot_lcb_isomer(
         ax=ax,
     )
 
-
     # ------------------------------------------------------------
     # 3. Optional overlay of individual compound points
     # ------------------------------------------------------------
+    # Map categorical positions to numeric centres (keys are string labels)
+    pos_map = {lab: i for i, lab in enumerate(order_labels)}
+    # Centered offsets for however many isomer levels are present (1, 2, or 3)
+    offsets = np.linspace(-0.25, 0.25, num=len(isomer_order)) if len(isomer_order) > 1 else np.array([0.0])
+    hue_offsets = dict(zip(isomer_order, offsets))
+
     if show_points:
         default_pts = dict(s=20, alpha=0.5, edgecolors='white')
         default_pts.update(point_kwargs or {})
-
-        # Map categorical positions to numeric centres (keys are string labels)
-        pos_map = {lab: i for i, lab in enumerate(order_labels)}
-
-        # Centered offsets for however many isomer levels are present (1, 2, or 3)
-        offsets = np.linspace(-0.25, 0.25, num=len(isomer_order)) if len(isomer_order) > 1 else np.array([0.0])
-        hue_offsets = dict(zip(isomer_order, offsets))
 
         xs = (
             df['lcb_group'].map(pos_map)
@@ -728,13 +795,107 @@ def plot_activity_boxplot_lcb_isomer(
         )
         ax.scatter(xs, df['mean_activity'], **default_pts)
 
+    # ------------------------------------------------------------
+    # 3b. Overlay example phthalates (dots + labels)
+    # ------------------------------------------------------------
+    if example_phthalates is not None and not example_phthalates.empty:
+        ph = example_phthalates.copy()
+
+        # Map LCB to the same grouped string labels as df
+        def lcb_to_group_label(lcb_val: int) -> str | None:
+            for s in range_sets:
+                if lcb_val in s:
+                    return set_labels.get(tuple(s))
+            return None
+
+        ph['lcb_group'] = ph['LongestCarbonBackbone'].apply(
+            lambda v: lcb_to_group_label(int(v)) if pd.notna(v) else None
+        )
+
+        # Normalize isomer names for phthalates to match palette_map keys
+        if 'Isomer' in ph.columns:
+            if np.issubdtype(pd.Series(ph['Isomer']).dtype, np.number):
+                ph['IsomerName'] = pd.Series(ph['Isomer']).map(isomer_labels).fillna('unknown')
+            else:
+                ph['IsomerName'] = (
+                    ph['Isomer'].astype(str).str.lower()
+                    .map({'o': 'ortho', 'ortho': 'ortho',
+                          'i': 'iso',   'iso': 'iso',
+                          't': 'tere',  'tere': 'tere'})
+                    .fillna('unknown')
+                )
+        else:
+            ph['IsomerName'] = 'unknown'
+
+        ph = ph.dropna(subset=['lcb_group'])
+
+        if not ph.empty:
+            ph['x_center'] = ph['lcb_group'].map(pos_map)
+            # Deterministic jitter per compound to avoid perfect overlaps
+            ph['x'] = ph.apply(
+                lambda r: (
+                    r['x_center']
+                    + hue_offsets.get(r['IsomerName'], 0.0)
+                    + _stable_jitter(str(r['name']))
+                ),
+                axis=1,
+            )
+
+            # Scatter example points with black borders and same fill color as boxplots
+            for _, row in ph.iterrows():
+                color = palette_map.get(row['IsomerName'], 'black')
+                ax.scatter(
+                    row['x'],
+                    row['mean_activity'],
+                    s=64,
+                    zorder=11,
+                    facecolors=color,
+                    edgecolors='black',
+                    linewidths=0.9,
+                )
+
+            # Upright labels with elbow connectors, staggered mostly vertically
+            if 'name' in ph.columns:
+                # Keep a modest, fixed horizontal offset so labels clear the point
+                base_dx = 0.35
+                base_dy = 0.13
+
+                # Stagger labels within each LCB group
+                for _, group in ph.groupby('lcb_group'):
+                    group_sorted = group.sort_values('mean_activity')
+
+                    for idx, (_, row) in enumerate(group_sorted.iterrows()):
+                        # Determine jitter direction for this point:
+                        # x = x_center + hue_offset + jitter  →  jitter = x - (x_center + hue_offset)
+                        hue_offset = hue_offsets.get(row['IsomerName'], 0.0)
+                        jitter = float(row['x']) - (float(row['x_center']) + float(hue_offset))
+
+                        # Put label left if jitter < 0, right otherwise
+                        side = -1.0 if jitter < 0.0 else 1.0
+
+                        # Alternate above / below the point and move mainly in y
+                        level = idx // 2 + 1
+                        sign = 1.0 if idx % 2 == 0 else -1.0
+
+                        dx = side * base_dx          # fixed horizontal shift, direction from jitter
+                        dy = sign * base_dy * level  # increasing vertical separation
+
+                        _add_elbow_label(
+                            ax=ax,
+                            x_anchor=float(row['x']),
+                            y_anchor=float(row['mean_activity']),
+                            text=str(row['name']),
+                            dx=dx,
+                            dy=dy,
+                        )
+
+
 
     # ------------------------------------------------------------
     # 4. Cosmetics
     # ------------------------------------------------------------
     ax.set_xlabel("Longest Carbon Backbone (number of atoms)")
     ax.set_ylabel("Mean Activity Value")
-    # ax.set_title("Mean Activity by LCB and Isomer (≤ C6)")
 
     # Ensure tick labels align with the explicit order
     ax.set_xticklabels(order_labels)
@@ -742,9 +903,7 @@ def plot_activity_boxplot_lcb_isomer(
     # With named isomers, Seaborn legend labels are already human-friendly
     ax.legend(title="Isomer", frameon=False)
 
-
     ax.spines[['top', 'right']].set_visible(False)
-    # plt.tight_layout()
 
     if do_stat_tests:
         fig_labels = {
@@ -768,6 +927,7 @@ def plot_activity_boxplot_lcb_isomer(
 
     plt.show()
     return ax
+
 
 def show_C0_mols(descriptor_df: pd.DataFrame):
     """
@@ -897,6 +1057,19 @@ if __name__ == "__main__":
                         help='Do not use the linear regression model as a descriptor.')
     parser.add_argument('--cluster_heatmap', action='store_true',
                         help='Plot the hierarchical clustered heatmap for compounds and assays.')
+    parser.add_argument('--no_stats_tests', action='store_true',
+                        help='Do not perform statistical tests in LCB plots.')
+    parser.add_argument(
+        '--label_phthalates',
+        action='store_true',
+        help='Overlay example phthalate markers and labels on LCB plots.',
+    )
+    parser.add_argument(
+        '--phthalates_csv',
+        type=Path,
+        default=Path('resources/example_phthalates.csv'),
+        help='CSV file listing example phthalates (name, smiles, inchi).',
+    )
     # parser.add_argument('--normalize', action='store_true',
     #                     help='Normalize the activity matrix.')
     parser.add_argument('--zscore', action='store_true',
@@ -962,12 +1135,55 @@ if __name__ == "__main__":
         else:
             activity_Y = activity_df
 
-        # plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, outdir=outdir)
-        # plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, lcb_min=7, lcb_max=6, outdir=outdir, do_stat_tests=True)
         max_lcb = descriptor_df_cp['LongestCarbonBackbone'].max()
-        # plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, range_sets=[{1, 2, 3}, {4, 5, 6}, set(range(7, max_lcb + 1))], outdir=outdir, do_stat_tests=True)
-        # plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, range_sets=[{1, 2, 3}, {4, 5, 6, 7}, set(range(8, max_lcb + 1))], outdir=outdir, do_stat_tests=True)
-        plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, range_sets=[{1, 2, 3}, {4, 5, 6}, {7, 8}, set(range(9, max_lcb + 1))], outdir=outdir, do_stat_tests=True)
+
+        example_phthalates_df: pd.DataFrame | None = None
+        if args.label_phthalates:
+            csv_path = args.phthalates_csv
+            if not csv_path.exists():
+                print(f"Warning: phthalates CSV not found at {csv_path}; skipping labeling.")
+            else:
+                try:
+                    example_phthalates_df = load_example_phthalates_points(
+                        csv_path,
+                        descriptor_df_cp,
+                        activity_Y,
+                    )
+                    if example_phthalates_df.empty:
+                        print(
+                            f"Warning: no example phthalates from {csv_path} matched "
+                            "current descriptor/activity tables; skipping labeling."
+                        )
+                        example_phthalates_df = None
+                    else:
+                        print(
+                            f"Overlaying {len(example_phthalates_df)} example phthalates "
+                            f"from {csv_path} on LCB boxplot."
+                        )
+
+                    # shorten names for labeling
+                    example_phthalates_df['name'] = example_phthalates_df['name'].str.replace(
+                        'Dimethyl ', '',
+                    )
+                except Exception as exc:
+                    print(
+                        f"Warning: could not load example phthalates from {csv_path}: {exc}. "
+                        "Skipping labeling."
+                    )
+
+        plot_activity_boxplot_lcb_isomer(
+            descriptor_df_cp,
+            activity_Y,
+            range_sets=[
+                {1, 2, 3},
+                {4, 5, 6},
+                {7, 8},
+                set(range(9, max_lcb + 1))
+            ],
+            outdir=outdir,
+            do_stat_tests=not args.no_stats_tests,
+            example_phthalates=example_phthalates_df,
+        )
         # show_C0_mols(descriptor_df_cp)
 
     # Compute variance inflation factors (VIFs) to check for multicollinearity

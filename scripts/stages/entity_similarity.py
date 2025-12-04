@@ -489,6 +489,24 @@ def cluster_rows_and_make_heatmap(
     # activity_matrix = phthalate_df.groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     # activity_matrix = activity_matrix.pivot(index='inchi', columns='title', values='positive_prediction')
     inchis = phthalate_df['inchi'].drop_duplicates().tolist()
+    inchis_to_remove = []
+    # remove ions and non-standard InChIs
+    for i, inchi in enumerate(inchis):
+        mol = Chem.MolFromInchi(inchi)
+        if Chem.GetFormalCharge(mol) != 0:
+            inchis_to_remove.append(inchi)
+            continue
+
+        if not inchi.startswith('InChI=1S/'):
+            standard_inchi = Chem.MolToInchi(mol)
+            # first check if standard InChI exists in the set
+            if standard_inchi in inchis:
+                inchis_to_remove.append(inchi)
+            else:
+                inchis[i] = standard_inchi
+
+    inchis = [inchi for inchi in inchis if inchi not in inchis_to_remove]
+        
 
     # inchi_activity_counts = phthalate_df.reset_index().groupby(['inchi','title'])['positive_prediction'].mean().reset_index()
     # inchi_activity_counts['active'] = inchi_activity_counts['positive_prediction'] > 0.6
@@ -726,7 +744,7 @@ def cluster_rows_and_make_heatmap(
 
     x_offset = mean_activity.max()*bar_tip_fraction
     for (pos, inchi, name), y_shift in zip(examples, shifts):
-        x = mean_activity.iloc[pos]
+        x = max(mean_activity.iloc[pos], 0)  # avoid negative bar tips
         ax_bar.annotate(
             name,
             xy=(x, pos),                       # arrow starts at bar tip

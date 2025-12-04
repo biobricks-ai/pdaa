@@ -368,9 +368,17 @@ def classify_isomer(mol: AllChem.Mol) -> int:
         0 for ortho, 1 for iso (meta), 2 for tere (para) phthalate.
     """
     possible_modes = ('ortho_phthalate', 'meta_phthalate', 'para_phthalate')
+    matching_isomers = []
     for i, mode in enumerate(possible_modes):
         if is_phthalate(mol, modes=(mode,)):
-            return i
+            matching_isomers.append(i)
+
+    if len(matching_isomers) != 1:
+        raise ValueError(
+            f"Expected exactly one isomer match for phthalate, "
+            f"but found {len(matching_isomers)} matches."
+        )
+    return matching_isomers[0]
 
 def get_branching_ratio(mol) -> float:
     """
