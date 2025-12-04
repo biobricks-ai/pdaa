@@ -965,7 +965,9 @@ if __name__ == "__main__":
         # plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, outdir=outdir)
         # plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, lcb_min=7, lcb_max=6, outdir=outdir, do_stat_tests=True)
         max_lcb = descriptor_df_cp['LongestCarbonBackbone'].max()
-        plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, range_sets=[{1, 2, 3}, {4, 5, 6}, set(range(7, max_lcb + 1))], outdir=outdir, do_stat_tests=True)
+        # plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, range_sets=[{1, 2, 3}, {4, 5, 6}, set(range(7, max_lcb + 1))], outdir=outdir, do_stat_tests=True)
+        # plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, range_sets=[{1, 2, 3}, {4, 5, 6, 7}, set(range(8, max_lcb + 1))], outdir=outdir, do_stat_tests=True)
+        plot_activity_boxplot_lcb_isomer(descriptor_df_cp, activity_Y, range_sets=[{1, 2, 3}, {4, 5, 6}, {7, 8}, set(range(9, max_lcb + 1))], outdir=outdir, do_stat_tests=True)
         # show_C0_mols(descriptor_df_cp)
 
     # Compute variance inflation factors (VIFs) to check for multicollinearity

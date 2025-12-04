@@ -14,10 +14,11 @@ sys.path.append('./')
 from scripts.utils.helpers import smiles_to_inchi
 from stages.utils.pdaa import predict_all_properties_with_sqlite_cache
 
+# Path to the input file with phthalate InChIs
+# fname = "resources/example_phthalates.csv"
+fname = "resources/long_chain_phthalates.csv"
+infile = Path(fname)  
 
-
-# infile = Path("resources/example_phthalates.txt")  # Path to the input file with phthalate SMILES
-infile = Path("resources/example_phthalates.csv")  # Path to the input file with phthalate SMILES
 # Read the SMILES from the input file
 # smiles_list = infile.read_text().splitlines()
 df = pd.read_csv(infile)
