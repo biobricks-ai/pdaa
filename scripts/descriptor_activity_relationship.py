@@ -1,4 +1,5 @@
 import argparse
+import json
 from typing import List, Set
 import hashlib
 import numpy as np
@@ -28,8 +29,62 @@ from scripts.utils.helpers import (
     remove_high_vif_descriptors,
 )
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # savepath for figures
 fig_path = Path('cache/descriptors')
+
+
+def filter_assays_by_flags(
+    activity_df: pd.DataFrame,
+    flag_csv: Path,
+    mode: str,
+) -> pd.DataFrame:
+    """Filter activity_df columns using DART/ED flags from a CSV.
+
+    Parameters
+    ----------
+    activity_df : pd.DataFrame
+        Activity matrix (compounds x assays).
+    flag_csv : Path
+        CSV with columns: Title, DART, ED.
+    mode : str
+        ``"direct_only"`` keeps assays where DART or ED is ``"direct"``.
+        ``"direct_or_indirect"`` keeps assays where DART or ED is
+        ``"direct"`` or ``"indirect"``.
+        ``"dart_direct"`` keeps assays where DART is ``"direct"``
+        (ignores the ED column).
+
+    Returns
+    -------
+    pd.DataFrame
+        Column-filtered copy of *activity_df*.
+    """
+    flags = pd.read_csv(flag_csv)
+    if mode == "direct_only":
+        keep = flags.loc[
+            (flags["DART"] == "direct") | (flags["ED"] == "direct"), "Title"
+        ]
+    elif mode == "direct_or_indirect":
+        keep = flags.loc[
+            flags["DART"].isin(["direct", "indirect"])
+            | flags["ED"].isin(["direct", "indirect"]),
+            "Title",
+        ]
+    elif mode == "dart_direct":
+        keep = flags.loc[flags["DART"] == "direct", "Title"]
+    else:
+        raise ValueError(f"Unknown filter mode: {mode!r}")
+
+    keep_set = set(keep)
+    matched = [c for c in activity_df.columns if c in keep_set]
+    logger.info(
+        "Assay filter '%s': kept %d / %d assays", mode, len(matched), len(activity_df.columns)
+    )
+    return activity_df[matched]
+
 
 def Pearson_correlation_heatmap(X: pd.DataFrame, Y: pd.DataFrame, draw_heatmap: bool = False) -> pd.DataFrame:
     """
@@ -532,6 +587,7 @@ def plot_activity_boxplot_lcb_isomer(
         activity_df: pd.DataFrame,
         *,
         range_sets : List[Set] = None,
+        filename_suffix: str = "",
         lcb_min: int = 0,
         lcb_max: int = 6,
         ax: plt.Axes | None = None,
@@ -917,15 +973,15 @@ def plot_activity_boxplot_lcb_isomer(
             ax.text(-0.05, 1.05, lab, transform=ax.transAxes,      # just outside upper-left
                     fontsize=14, fontweight='bold', va='top', ha='right')
 
-        outpath = outdir / "combined_lcb_binary.png"
+        outpath = outdir / f"combined_lcb_binary{filename_suffix}.png"
         ax = axdict
     else:
-        outpath = outdir / "lcb_isomer_boxplot.png"
+        outpath = outdir / f"lcb_isomer_boxplot{filename_suffix}.png"
 
     plt.savefig(outpath)
     print(f"Saved plot to {outpath}")
+    plt.close()
 
-    plt.show()
     return ax
 
 
@@ -1074,6 +1130,20 @@ if __name__ == "__main__":
     #                     help='Normalize the activity matrix.')
     parser.add_argument('--zscore', action='store_true',
                         help='Calculate z-scores of the activity matrix by column.')
+    parser.add_argument(
+        '--assay_filter_csv',
+        type=Path,
+        default=None,
+        help='CSV with Title, DART, ED columns to filter assays. '
+             'Generates _direct_only and _direct_or_indirect plot variants.',
+    )
+    parser.add_argument(
+        '--range_sets',
+        type=str,
+        default=None,
+        help='JSON list of LCB range sets, e.g. \'[[1,2,3,4,5,6],[7,8],[9]]\'.'
+             ' Last set is extended to max LCB. Overrides the default grouping.',
+    )
     args = parser.parse_args()
 
     cachedir = Path(args.cachedir)
@@ -1137,6 +1207,21 @@ if __name__ == "__main__":
 
         max_lcb = descriptor_df_cp['LongestCarbonBackbone'].max()
 
+        if args.range_sets is not None:
+            raw = json.loads(args.range_sets)
+            lcb_range_sets = [set(s) for s in raw]
+            # Extend the last set to max_lcb
+            last = lcb_range_sets[-1]
+            start = max(last) + 1
+            lcb_range_sets[-1] = last | set(range(start, max_lcb + 1))
+        else:
+            lcb_range_sets = [
+                {1, 2, 3},
+                {4, 5, 6},
+                {7, 8},
+                set(range(9, max_lcb + 1)),
+            ]
+
         example_phthalates_df: pd.DataFrame | None = None
         if args.label_phthalates:
             csv_path = args.phthalates_csv
@@ -1174,16 +1259,45 @@ if __name__ == "__main__":
         plot_activity_boxplot_lcb_isomer(
             descriptor_df_cp,
             activity_Y,
-            range_sets=[
-                {1, 2, 3},
-                {4, 5, 6},
-                {7, 8},
-                set(range(9, max_lcb + 1))
-            ],
+            range_sets=lcb_range_sets,
             outdir=outdir,
             do_stat_tests=not args.no_stats_tests,
             example_phthalates=example_phthalates_df,
         )
+
+        # Generate assay-filtered variants when a flag CSV is provided
+        if args.assay_filter_csv is not None:
+            for mode in ("direct_only", "direct_or_indirect"):
+                filtered_activity = filter_assays_by_flags(
+                    activity_Y, args.assay_filter_csv, mode,
+                )
+
+                # Recompute example-phthalate points against the filtered assays
+                filtered_examples = None
+                if args.label_phthalates and example_phthalates_df is not None:
+                    try:
+                        filtered_examples = load_example_phthalates_points(
+                            args.phthalates_csv, descriptor_df_cp, filtered_activity,
+                        )
+                        if filtered_examples.empty:
+                            filtered_examples = None
+                        else:
+                            filtered_examples['name'] = filtered_examples['name'].str.replace(
+                                'Dimethyl ', '',
+                            )
+                    except Exception as exc:
+                        logger.warning("Could not load example phthalates for %s: %s", mode, exc)
+
+                plot_activity_boxplot_lcb_isomer(
+                    descriptor_df_cp,
+                    filtered_activity,
+                    range_sets=lcb_range_sets,
+                    outdir=outdir,
+                    do_stat_tests=not args.no_stats_tests,
+                    example_phthalates=filtered_examples,
+                    filename_suffix=f"_{mode}",
+                )
+
         # show_C0_mols(descriptor_df_cp)
 
     # Compute variance inflation factors (VIFs) to check for multicollinearity
