@@ -8,7 +8,7 @@ import pandas as pd
 from rdkit import Chem
 from tqdm import tqdm
 sys.path.append('./')
-from stages.utils.pdaa import smiles_is_true_phthalate
+from scripts.utils.helpers import smiles_is_true_phthalate
 
 outdir = Path('cache/zinc_phthalates')
 tempdir = outdir / 'temp'
