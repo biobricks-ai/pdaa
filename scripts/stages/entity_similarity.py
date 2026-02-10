@@ -654,7 +654,7 @@ def cluster_rows_and_make_heatmap(
             if (mol := Chem.MolFromInchi(inchi)) is None:
                 continue  # skip invalid InChIs
             match_list = phthalate_matches(
-                mol, phthalate_modes, check_elements=True, valid_num_rings=[1], match_mode='one'
+                mol, phthalate_modes, check_elements=True, valid_num_rings=[1, 2], match_mode='one'
             )
             isomer_matches += match_list
             row_clusters[i] = np.argmax(match_list)  # assign the cluster based on the first match
@@ -976,7 +976,7 @@ def plot_phthalate_activity_relationships(*, color_by='cluster', example_plot='l
         #         Chem.MolFromSmiles(smiles),
         #         modes=phthalate_modes,
         #         check_elements=True,
-        #         valid_num_rings=[1],
+        #         valid_num_rings=[1, 2],
         #     )
         #     if match[0]:
         #         marker_styles.append('+')  # Ortho

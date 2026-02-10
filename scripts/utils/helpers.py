@@ -63,7 +63,7 @@ SMARTS_PATTERNS = {
 # Pre-compile once at import time
 COMPILED_PATTERNS = {k: AllChem.MolFromSmarts(v) for k, v in SMARTS_PATTERNS.items()}
 
-def phthalate_matches(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1]):
+def phthalate_matches(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1, 2]):
     # Empty or None?
     empty_match = [False for _ in modes]
     if (mol is None) or (not isinstance(mol, AllChem.Mol)):
@@ -92,7 +92,7 @@ def phthalate_matches(mol, *, modes=("any",), check_elements=True, valid_num_rin
     matches_sub = [matches[key] for key in modes]  # let this raise KeyError if unknown mode
     return matches_sub
 
-def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1], match_mode="any"):
+def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1, 2], match_mode="any"):
     """
     Return True if *mol* matches any phthalate class named in *modes*.
 
@@ -126,7 +126,7 @@ def is_phthalate(mol, *, modes=("any",), check_elements=True, valid_num_rings=[1
     else:
         raise ValueError(f"Unknown match_mode: {match_mode}. Use 'any', 'one', or 'all'.")
 
-def smiles_is_phthalate(smiles, *, modes=("any",), check_elements=True, valid_num_rings=[1]):
+def smiles_is_phthalate(smiles, *, modes=("any",), check_elements=True, valid_num_rings=[1, 2]):
     """
     Check if a SMILES string represents a phthalate.
 
@@ -152,13 +152,13 @@ def smiles_is_phthalate(smiles, *, modes=("any",), check_elements=True, valid_nu
         return False
     return is_phthalate(mol, modes=modes, check_elements=check_elements, valid_num_rings=valid_num_rings)
 
-def is_true_phthalate(mol, *, check_elements=True, valid_num_rings=[1]):
+def is_true_phthalate(mol, *, check_elements=True, valid_num_rings=[1, 2]):
     return is_phthalate(
         mol, modes=("ortho_phthalate", "meta_phthalate", "para_phthalate"),
         check_elements=check_elements, valid_num_rings=valid_num_rings
     )
 
-def smiles_is_true_phthalate(smiles, *, check_elements=True, valid_num_rings=[1]):
+def smiles_is_true_phthalate(smiles, *, check_elements=True, valid_num_rings=[1, 2]):
     """
     Check if a SMILES string represents a phthalate.
 
@@ -181,7 +181,7 @@ def smiles_is_true_phthalate(smiles, *, check_elements=True, valid_num_rings=[1]
         return False
     return is_true_phthalate(mol, check_elements=check_elements, valid_num_rings=valid_num_rings)
 
-def is_diester_phthalate(mol, *, check_elements=True, valid_num_rings=[1]):
+def is_diester_phthalate(mol, *, check_elements=True, valid_num_rings=[1, 2]):
     """
     Check if a molecule is a diester phthalate.
 
