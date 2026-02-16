@@ -94,9 +94,66 @@ def get_phthalate_activities(activity_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 
+def get_box_obstacle_points(ax, n_points_per_edge: int = 10) -> tuple[list, list]:
+    """
+    Extract points along boxplot edges to use as obstacles for text placement.
+
+    Returns lists of x and y coordinates for points along box edges, whiskers,
+    and median lines.
+    """
+    obstacle_x = []
+    obstacle_y = []
+
+    # Get all patches (boxes) - these are PathPatch objects
+    for patch in ax.patches:
+        # Get the path vertices (corners of the box)
+        path = patch.get_path()
+        vertices = path.vertices
+
+        if len(vertices) >= 4:
+            # Get bounding box from vertices
+            x_coords = vertices[:, 0]
+            y_coords = vertices[:, 1]
+            x0, x1 = x_coords.min(), x_coords.max()
+            y0, y1 = y_coords.min(), y_coords.max()
+
+            # Add points along all four edges
+            # Bottom edge
+            for x in np.linspace(x0, x1, n_points_per_edge):
+                obstacle_x.append(x)
+                obstacle_y.append(y0)
+            # Top edge
+            for x in np.linspace(x0, x1, n_points_per_edge):
+                obstacle_x.append(x)
+                obstacle_y.append(y1)
+            # Left edge
+            for y in np.linspace(y0, y1, n_points_per_edge):
+                obstacle_x.append(x0)
+                obstacle_y.append(y)
+            # Right edge
+            for y in np.linspace(y0, y1, n_points_per_edge):
+                obstacle_x.append(x1)
+                obstacle_y.append(y)
+
+    # Get lines (whiskers, medians, caps)
+    for line in ax.lines:
+        xdata = line.get_xdata()
+        ydata = line.get_ydata()
+        if len(xdata) >= 2:
+            # Add points along the line
+            for x, y in zip(
+                np.linspace(xdata[0], xdata[-1], n_points_per_edge),
+                np.linspace(ydata[0], ydata[-1], n_points_per_edge)
+            ):
+                obstacle_x.append(x)
+                obstacle_y.append(y)
+
+    return obstacle_x, obstacle_y
+
+
 def create_boxplot(results_df: pd.DataFrame, output_path: Path) -> None:
     """Create and save the boxplot figure."""
-    fig, ax = plt.subplots(figsize=(10, 6))
+    _fig, ax = plt.subplots(figsize=(10, 6))
 
     # Boxplot without outlier markers
     sns.boxplot(
@@ -111,6 +168,9 @@ def create_boxplot(results_df: pd.DataFrame, output_path: Path) -> None:
         width=0.6
     )
 
+    # Extract box edges as obstacles for text placement
+    obstacle_x, obstacle_y = get_box_obstacle_points(ax, n_points_per_edge=10)
+
     # Overlay individual points with labels
     np.random.seed(42)
     texts = []
@@ -122,7 +182,7 @@ def create_boxplot(results_df: pd.DataFrame, output_path: Path) -> None:
         n_points = len(group_data)
 
         # Generate jitter
-        x_jitter = np.random.uniform(-0.12, 0.12, n_points)
+        x_jitter = np.random.uniform(-0.15, 0.15, n_points)
 
         for j, (_, row) in enumerate(group_data.iterrows()):
             # Set DIPP jitter to 0 (it's an outlier, keep centered)
@@ -154,21 +214,10 @@ def create_boxplot(results_df: pd.DataFrame, output_path: Path) -> None:
             )
             texts.append(txt)
 
-    # Adjust text positions to avoid overlap
-    adjust_text(
-        texts,
-        x=x_positions,
-        y=y_positions,
-        ax=ax,
-        arrowprops=dict(arrowstyle='-', color='#888888', lw=0.5),
-        expand_points=(1.5, 1.5),
-        force_text=(0.5, 0.8),
-        force_points=(0.3, 0.3),
-        lim=100
-    )
-
-    # Add mean markers
+    # Add mean markers and collect their positions as obstacles
     means = results_df.groupby("group")["mean_activity"].mean().reindex(GROUP_ORDER)
+    mean_x = []
+    mean_y = []
     for i, mean in enumerate(means):
         ax.scatter(
             i, mean,
@@ -180,6 +229,26 @@ def create_boxplot(results_df: pd.DataFrame, output_path: Path) -> None:
             linewidth=0,
             label="Mean" if i == 0 else ""
         )
+        mean_x.append(i)
+        mean_y.append(mean)
+
+    # Combine data points, box obstacles, and mean markers for text avoidance
+    all_obstacle_x = x_positions + obstacle_x + mean_x
+    all_obstacle_y = y_positions + obstacle_y + mean_y
+
+    # Adjust text positions to avoid overlaps
+    adjust_text(
+        texts,
+        x=all_obstacle_x,
+        y=all_obstacle_y,
+        ax=ax,
+        arrowprops=dict(arrowstyle='-', color='#888888', lw=0.5),
+        expand_points=(1.5, 1.5),
+        expand_text=(1.2, 1.2),
+        force_text=(0.5, 0.5),
+        force_points=(0.5, 0.5),
+        lim=200
+    )
 
     ax.set_title("Activity of Selected Phthalates by Longest Carbon Backbone", fontsize=14, fontweight='medium')
     ax.set_xlabel("Longest Carbon Backbone", fontsize=11)
