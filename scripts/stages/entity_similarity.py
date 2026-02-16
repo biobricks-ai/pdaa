@@ -447,7 +447,7 @@ def build_phthalate_ice_activity_df(mask_method='prediction', use_cache=True):
     print(f"Filtering for phthalates with modes = {phthalate_modes}...")
     phthalate_options = {
         'check_elements': True,
-        'valid_num_rings': [1],
+        'valid_num_rings': [1, 2],
     }
 
     filtered_phthalates = inchi_mol_df[inchi_mol_df['mol'].progress_apply(

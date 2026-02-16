@@ -608,8 +608,13 @@ def get_linear_model(X: pd.DataFrame, Y: pd.DataFrame):
     # model = LinearRegression()
     # model.fit(X, Y)
     # return model
-    
+
     # from sklearn.metrics import r2_score
+
+    # Align indices between X and Y
+    common_idx = X.index.intersection(Y.index)
+    X = X.loc[common_idx]
+    Y = Y.loc[common_idx]
 
     if Y.ndim > 1:
         y_mean = Y.mean(axis=1)

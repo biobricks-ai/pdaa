@@ -175,6 +175,11 @@ def get_oob_score(X: pd.DataFrame, Y: pd.DataFrame) -> float:
     float
         Out-of-bag score of the Random Forest model.
     """
+    # Align indices between X and Y
+    common_idx = X.index.intersection(Y.index)
+    X = X.loc[common_idx]
+    Y = Y.loc[common_idx]
+
     from sklearn.ensemble import RandomForestRegressor
     rf = RandomForestRegressor(n_estimators=500, oob_score=True, n_jobs=-1)
     rf.fit(X, Y)
