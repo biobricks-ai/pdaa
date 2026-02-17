@@ -860,7 +860,15 @@ def loess_ci(x, y, span=0.3, x_grid=None, level=0.95):
     conf    = pred.confidence(alpha=1 - level)
     return x_grid, pred.values, conf.lower, conf.upper
 
-def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFrame, *, linear_model = None, outdir: Path, isomer_boxplot: bool = True):
+def plot_activity_features(
+    descriptor_df: pd.DataFrame,
+    activity_df: pd.DataFrame,
+    *,
+    linear_model = None,
+    outdir: Path,
+    isomer_boxplot: bool = True,
+    smooth_discrete: bool = False,
+):
     """
     Plot the activity features against the descriptors.
 
@@ -870,6 +878,15 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
         DataFrame containing descriptors.
     activity_df : pd.DataFrame
         DataFrame containing activities.
+    linear_model : optional
+        Linear model for predictions.
+    outdir : Path
+        Output directory for saving plots.
+    isomer_boxplot : bool, default True
+        Use boxplot for Isomer (True) or regression plot (False).
+    smooth_discrete : bool, default False
+        Apply LOESS smoothing to discrete variables like LongestCarbonBackbone.
+        When False, uses linear regression for these variables.
     """
     # key_descriptors = [
     #     'MolWt', 'cLogP', 'RotB',
@@ -918,34 +935,70 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
     for i, descriptor in enumerate(key_descriptors):
         ax = axes[i]
         x = descriptor_df[descriptor]
-        # if descriptor in ['LinearModel', 'Isomer', 'LongestCarbonBackbone',]:
-        if descriptor in ['LinearModel', 'LongestCarbonBackbone',]:
+
+        # Create aligned data (remove NaN values from both x and Y together)
+        valid_idx = x.notna() & Y.notna()
+        x_clean = x[valid_idx]
+        Y_clean = Y[valid_idx]
+
+        # Handle LinearModel (always uses linear regression)
+        if descriptor == 'LinearModel':
             sns.regplot(
-                x=x,
-                y=Y,
+                x=x_clean,
+                y=Y_clean,
                 fit_reg=True,
                 ci=95,
                 scatter_kws={
                     'alpha': 0.5,
                     'edgecolors': 'white',
-                    'color': 'green' if descriptor == 'LinearModel' else default_color
+                    'color': 'green'
                 },
-                line_kws={'color': 'black', 'lw': 2},                    
+                line_kws={'color': 'black', 'lw': 2},
                 ax=ax
             )
             # Set xtick steps to 0.05
-            if descriptor == 'LinearModel':
-                import matplotlib.ticker as mticker
-                ax.xaxis.set_major_locator(mticker.MultipleLocator(0.05))
+            import matplotlib.ticker as mticker
+            ax.xaxis.set_major_locator(mticker.MultipleLocator(0.05))
+
+        # Handle LongestCarbonBackbone (modular: LOESS or linear regression)
+        elif descriptor == 'LongestCarbonBackbone':
+            if smooth_discrete:
+                # Apply LOESS smoothing for discrete variable
+                sns.regplot(
+                    x=x_clean,
+                    y=Y_clean,
+                    fit_reg=False,
+                    scatter_kws={'alpha': 0.5, 'edgecolors': 'white', 'color': default_color},
+                    ax=ax
+                )
+                xg, curve, lo, hi = loess_ci(x_clean.values, Y_clean.values, span=0.5)
+                ax.fill_between(xg, lo, hi, color='grey', alpha=0.25, zorder=1)
+                ax.plot(xg, curve, color="black", lw=2, zorder=2)
+            else:
+                # Use linear regression (default behavior)
+                sns.regplot(
+                    x=x_clean,
+                    y=Y_clean,
+                    fit_reg=True,
+                    ci=95,
+                    scatter_kws={
+                        'alpha': 0.5,
+                        'edgecolors': 'white',
+                        'color': default_color
+                    },
+                    line_kws={'color': 'black', 'lw': 2},
+                    ax=ax
+                )
+
         elif descriptor == 'Isomer':
 
             if isomer_boxplot:
                 # Categorical: use a boxplot for Isomer instead of scatter/regression
-                tmp = pd.DataFrame({"Isomer": x, "mean_activity": Y}).dropna()
+                tmp = pd.DataFrame({"Isomer": x_clean, "mean_activity": Y_clean})
                 present_isomer_ints = np.sort(tmp["Isomer"].unique())
                 full_isomers = {0: "ortho", 1: "iso", 2: "tere"}  # ensure the order is consistent
                 labels = [full_isomers[i] for i in present_isomer_ints]
-                
+
                 sns.boxplot(
                     data=tmp,
                     x="Isomer",
@@ -972,8 +1025,8 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
             else:
                 # Regression plot for isomer type
                 sns.regplot(
-                    x=x,
-                    y=Y,
+                    x=x_clean,
+                    y=Y_clean,
                     fit_reg=True,
                     ci=95,
                     scatter_kws={
@@ -983,11 +1036,12 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
                     line_kws={'color': 'black', 'lw': 2},
                     ax=ax
                 )
-            
+
         else:
+            # Continuous variables with LOESS smoothing
             sns.regplot(
-                x=x,
-                y=Y,
+                x=x_clean,
+                y=Y_clean,
                 # lowess=True,
                 # robust=True,
                 fit_reg=False,
@@ -996,21 +1050,21 @@ def plot_activity_features(descriptor_df: pd.DataFrame, activity_df: pd.DataFram
                 # line_kws={'color': 'black', 'lw': 2},
                 ax=ax
             )
-            xg, curve, lo, hi = loess_ci(x.values, Y.values, span=0.5)
+            xg, curve, lo, hi = loess_ci(x_clean.values, Y_clean.values, span=0.5)
             ax.fill_between(xg, lo, hi, color='grey', alpha=0.25, zorder=1)
             ax.plot(xg, curve, color="black", lw=2, zorder=2)
         
 
         # limit the x-axis range to exclude outliers
-        Q1 = x.quantile(0.25)
-        Q3 = x.quantile(0.75)
+        Q1 = x_clean.quantile(0.25)
+        Q3 = x_clean.quantile(0.75)
         IQR = Q3 - Q1
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
         # Set x-axis limits if the data are outside the bounds
-        if x.min() > lower_bound:
+        if x_clean.min() > lower_bound:
             lower_bound = None  # no need to set lower bound if all values are above it
-        if x.max() < upper_bound:
+        if x_clean.max() < upper_bound:
             upper_bound = None  # no need to set upper bound if all values are below it
         if (lower_bound is not None) or (upper_bound is not None):
             ax.set_xlim(lower_bound, upper_bound)

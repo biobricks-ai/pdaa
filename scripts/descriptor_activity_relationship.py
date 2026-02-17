@@ -1118,6 +1118,9 @@ if __name__ == "__main__":
                         help='Do not use the linear regression model as a descriptor.')
     parser.add_argument('--cluster_heatmap', action='store_true',
                         help='Plot the hierarchical clustered heatmap for compounds and assays.')
+    parser.add_argument('--smooth_discrete', action='store_true',
+                        help='Apply LOESS smoothing to discrete variables (e.g., LongestCarbonBackbone) '
+                             'in descriptor plots instead of linear regression.')
     parser.add_argument('--no_stats_tests', action='store_true',
                         help='Do not perform statistical tests in LCB plots.')
     parser.add_argument(
@@ -1329,12 +1332,24 @@ if __name__ == "__main__":
         plot_activity_df = Y if args.zscore else activity_df
 
         if args.no_linear_descriptor:
-            plot_activity_features(descriptor_df_cp, plot_activity_df, linear_model=None, outdir=outdir)
+            plot_activity_features(
+                descriptor_df_cp,
+                plot_activity_df,
+                linear_model=None,
+                outdir=outdir,
+                smooth_discrete=args.smooth_discrete
+            )
         else:
             y_mean = activity_df.mean(axis=1)  # mean activity across all assays
             # add linear model predictions as a new descriptor, unscaled
-            descriptor_df_cp['LinearModel'] = ols.predict(sm.add_constant(X))*y_mean.std() + y_mean.mean() 
-            plot_activity_features(descriptor_df_cp, plot_activity_df, linear_model=ols, outdir=outdir)
+            descriptor_df_cp['LinearModel'] = ols.predict(sm.add_constant(X))*y_mean.std() + y_mean.mean()
+            plot_activity_features(
+                descriptor_df_cp,
+                plot_activity_df,
+                linear_model=ols,
+                outdir=outdir,
+                smooth_discrete=args.smooth_discrete
+            )
 
     if args.linear_plot:
         # Plot the linear regression model

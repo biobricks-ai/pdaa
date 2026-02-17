@@ -195,9 +195,112 @@ def get_box_obstacle_points(ax, n_points_per_edge: int = 10) -> tuple[list, list
     return obstacle_x, obstacle_y
 
 
-def create_boxplot(results_df: pd.DataFrame, output_path: Path, title: str) -> None:
-    """Create and save the boxplot figure."""
-    _fig, ax = plt.subplots(figsize=(10, 6))
+def create_boxplot(
+    results_df: pd.DataFrame,
+    output_path: Path,
+    title: str,
+    do_stat_tests: bool = False,
+) -> None:
+    """Create and save the boxplot figure.
+
+    Parameters
+    ----------
+    results_df : pd.DataFrame
+        DataFrame with columns: abbrev, name, group, mean_activity
+    output_path : Path
+        Path to save the figure
+    title : str
+        Title for the plot
+    do_stat_tests : bool, default False
+        If True, create 3-panel figure with statistical tests (Conover-Iman, Cliff's δ)
+    """
+
+    # Statistical tests setup if requested
+    if do_stat_tests:
+        import scikit_posthocs as sp
+        from cliffs_delta import cliffs_delta
+
+        # Create 3-panel mosaic layout
+        fig, axdict = plt.subplot_mosaic(
+            [['box', 'box'],             # top row: boxplot spans both columns
+             ['p',   'delta']],          # bottom row: p-values | effect sizes
+            figsize=(14, 10),
+            constrained_layout=True
+        )
+        ax = axdict['box']
+
+        # Prepare group labels for statistical tests
+        # Filter to only groups that have data
+        present_groups = [g for g in GROUP_ORDER if (results_df['group'] == g).any()]
+
+        # Run Conover-Iman pairwise comparisons
+        p_mat = sp.posthoc_conover(
+            results_df,
+            val_col="mean_activity",
+            group_col="group",
+            p_adjust="holm"
+        )
+
+        # Reorder to match GROUP_ORDER
+        ordered_groups = [g for g in GROUP_ORDER if g in p_mat.index]
+        p_mat = p_mat.loc[ordered_groups, ordered_groups]
+
+        # Clean matrix helper (remove top row and right column, mask upper triangle)
+        def clean_matrix(mat: pd.DataFrame):
+            mat_cleaned = mat.iloc[1:, :-1]
+            mask = np.triu(np.ones_like(mat_cleaned, dtype=bool), k=1)
+            return {'data': mat_cleaned, 'mask': mask}
+
+        # Plot p-value heatmap (panel B)
+        sns.heatmap(
+            **clean_matrix(p_mat),
+            annot=True,
+            fmt=".2g",
+            cmap="viridis_r",
+            cbar_kws={"label": "p (adj)"},
+            vmin=0,
+            vmax=1,
+            ax=axdict['p'],
+        )
+        axdict['p'].set_title("Conover-Iman pairwise comparisons")
+        axdict['p'].set_ylabel("")
+        axdict['p'].set_xlabel("")
+
+        # Calculate Cliff's delta effect sizes
+        effect = np.full((len(ordered_groups), len(ordered_groups)), np.nan)
+        for i, gi in enumerate(ordered_groups):
+            ai = results_df.loc[results_df.group == gi, "mean_activity"]
+            for j, gj in enumerate(ordered_groups):
+                if i < j:
+                    aj = results_df.loc[results_df.group == gj, "mean_activity"]
+                    d, _ = cliffs_delta(ai, aj)
+                    effect[i, j] = d
+                    effect[j, i] = -d
+
+        eff_df = pd.DataFrame(effect, index=ordered_groups, columns=ordered_groups)
+
+        # Plot effect size heatmap (panel C)
+        sns.heatmap(
+            **clean_matrix(eff_df),
+            annot=True,
+            fmt=".2f",
+            cmap="bwr",
+            center=0,
+            vmin=-1,
+            vmax=1,
+            cbar_kws={"label": "Cliff's δ"},
+            ax=axdict['delta'],
+        )
+        axdict['delta'].set_title("Effect-size matrix (Cliff's δ)")
+        axdict['delta'].set_ylabel("")
+        axdict['delta'].set_xlabel("")
+
+        # Rotate heatmap tick labels
+        for ax_hm in (axdict['p'], axdict['delta']):
+            plt.setp(ax_hm.get_xticklabels(), rotation=45, ha="right")
+            plt.setp(ax_hm.get_yticklabels(), rotation=0)
+    else:
+        _fig, ax = plt.subplots(figsize=(10, 6))
 
     # Boxplot without outlier markers
     sns.boxplot(
@@ -307,7 +410,28 @@ def create_boxplot(results_df: pd.DataFrame, output_path: Path, title: str) -> N
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
 
-    plt.tight_layout()
+    # Add panel labels if doing statistical tests
+    if do_stat_tests:
+        fig_labels = {
+            'box':   'A)',   # top boxplot
+            'p':     'B)',   # Conover-Iman heatmap
+            'delta': 'C)'    # Cliff's δ heatmap
+        }
+
+        for key, lab in fig_labels.items():
+            panel_ax = axdict[key]
+            panel_ax.text(
+                -0.05, 1.05, lab,
+                transform=panel_ax.transAxes,
+                fontsize=14,
+                fontweight='bold',
+                va='top',
+                ha='right'
+            )
+
+    if not do_stat_tests:
+        plt.tight_layout()
+
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close()
 
@@ -323,6 +447,7 @@ def main():
     parser.add_argument("csv_file", help="Path to CSV file with phthalates (relative to project root or absolute)")
     parser.add_argument("--output-name", help="Base name for output file (default: derived from CSV filename)")
     parser.add_argument("--title", help="Plot title (default: derived from CSV filename)")
+    parser.add_argument("--stats", action="store_true", help="Include statistical test panels (Conover-Iman, Cliff's δ)")
 
     args = parser.parse_args()
 
@@ -373,8 +498,9 @@ def main():
         return
 
     # Create plot
-    output_path = OUTPUT_DIR / f"{output_name}_boxplot.png"
-    create_boxplot(results_df, output_path, title)
+    suffix = "_combined" if args.stats else "_boxplot"
+    output_path = OUTPUT_DIR / f"{output_name}{suffix}.png"
+    create_boxplot(results_df, output_path, title, do_stat_tests=args.stats)
 
     # Print summary statistics
     logger.info("Summary statistics:")
