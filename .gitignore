@@ -5,8 +5,12 @@ logs
 /brick
 /raw
 /resources
+resources/exxonmobil/
 /dvc_pipeline.png
 .env
+
+# Confidential: contains descriptions of ExxonMobil-provided structure data
+CLAUDE.md
 faiss_index_cosine.index
 *.pyc
 
@@ -19,3 +23,6 @@ scratch.py
 *.bak
 
 assay_lists.txt
+
+# stray pipx environment artifact
+pipx_shared.pth

@@ -178,7 +178,8 @@ def main():
 
     # Create binary coverage matrix (chemical × assay)
     # For now, just save the pairs - we'll build the full matrix in the plotting script
-    coverage_pairs = has_data[['dtxsid', 'assay_token']].drop_duplicates()
+    # Use CASRN since DTXSID is not available in ICE API responses
+    coverage_pairs = has_data[['casrn', 'assay_token']].drop_duplicates()
     coverage_path = CACHE_DIR / "ice_empirical_pairs.csv"
     coverage_pairs.to_csv(coverage_path, index=False)
     logger.info(f"Saved {len(coverage_pairs)} unique chemical-assay pairs to {coverage_path}")

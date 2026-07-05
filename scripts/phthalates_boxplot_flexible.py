@@ -17,6 +17,7 @@ Output: cache/wide_groupings/<output_name>_boxplot.png
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from adjustText import adjust_text
 from rdkit import Chem
+
+sys.path.append('./')
+from scripts.utils.helpers import largest_carbon_backbone
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -86,10 +90,13 @@ def assign_chain_group(smiles: str) -> str:
         return "9+"
 
 
-def load_activity_data() -> pd.DataFrame:
+def load_activity_data(zscore: bool = False) -> pd.DataFrame:
     """Load the activity matrix from parquet."""
     activity_path = CACHE_DIR / "entity_similarity" / "activity_matrix_filled.parquet"
-    return pd.read_parquet(activity_path)
+    df = pd.read_parquet(activity_path)
+    if zscore:
+        df = (df - df.mean(axis=0)) / df.std(axis=0)
+    return df
 
 
 def normalize_group_format(group: str) -> str:
@@ -103,7 +110,24 @@ def normalize_group_format(group: str) -> str:
     return group
 
 
-def get_phthalate_activities(phthalates_df: pd.DataFrame, activity_df: pd.DataFrame) -> pd.DataFrame:
+def assign_largest_group(mol: Chem.Mol) -> str:
+    """Assign chain length group based on total carbon count of the largest side chain."""
+    count = largest_carbon_backbone(mol)
+    if count <= 3:
+        return "1-3"
+    elif count <= 6:
+        return "4-6"
+    elif count <= 8:
+        return "7-8"
+    else:
+        return "9+"
+
+
+def get_phthalate_activities(
+    phthalates_df: pd.DataFrame,
+    activity_df: pd.DataFrame,
+    metric: str = "lcb",
+) -> pd.DataFrame:
     """
     Look up activity values for each phthalate.
 
@@ -120,8 +144,9 @@ def get_phthalate_activities(phthalates_df: pd.DataFrame, activity_df: pd.DataFr
         if inchi in activity_df.index:
             mean_activity = activity_df.loc[inchi].mean()
 
-            # Get chain group from CSV if available, otherwise calculate
-            if "chain_length_group" in row and pd.notna(row["chain_length_group"]):
+            if metric == "largest":
+                group = assign_largest_group(mol)
+            elif "chain_length_group" in row and pd.notna(row["chain_length_group"]):
                 group = normalize_group_format(row["chain_length_group"])
             else:
                 group = assign_chain_group(row["smiles"])
@@ -200,6 +225,8 @@ def create_boxplot(
     output_path: Path,
     title: str,
     do_stat_tests: bool = False,
+    ylabel: str = "MAV",
+    xlabel: str = "Longest Carbon Backbone",
 ) -> None:
     """Create and save the boxplot figure.
 
@@ -402,8 +429,8 @@ def create_boxplot(
     )
 
     ax.set_title(title, fontsize=14, fontweight='medium')
-    ax.set_xlabel("Longest Carbon Backbone", fontsize=11)
-    ax.set_ylabel("MAV", fontsize=11)
+    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11)
     ax.legend(loc="upper right", framealpha=0.9)
 
     # Clean up spines
@@ -448,6 +475,9 @@ def main():
     parser.add_argument("--output-name", help="Base name for output file (default: derived from CSV filename)")
     parser.add_argument("--title", help="Plot title (default: derived from CSV filename)")
     parser.add_argument("--stats", action="store_true", help="Include statistical test panels (Conover-Iman, Cliff's δ)")
+    parser.add_argument("--zscore", action="store_true", help="Z-score normalize activity values across assays before averaging")
+    parser.add_argument("--metric", choices=["lcb", "largest"], default="lcb",
+                        help="Side-chain metric: 'lcb' = longest carbon backbone (path), 'largest' = total carbons in largest arm (default: lcb)")
 
     args = parser.parse_args()
 
@@ -468,14 +498,18 @@ def main():
         # e.g., "commercial_top20.csv" -> "commercial_top20"
         output_name = csv_path.stem
 
+    # Determine metric label
+    if args.metric == "largest":
+        metric_label = "Largest Carbon Backbone"
+    else:
+        metric_label = "Longest Carbon Backbone"
+
     # Determine title
     if args.title:
         title = args.title
     else:
-        # Create a nice title from the output name
-        # e.g., "commercial_top20" -> "Activity of Commercial Top 20 Phthalates"
         title_base = output_name.replace("_", " ").title()
-        title = f"Activity of {title_base} Phthalates by Longest Carbon Backbone"
+        title = f"Activity of {title_base} Phthalates by {metric_label}"
 
     # Ensure output directory exists
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -486,11 +520,11 @@ def main():
     logger.info(f"Loaded {len(phthalates_df)} phthalates")
 
     logger.info("Loading activity matrix...")
-    activity_df = load_activity_data()
+    activity_df = load_activity_data(zscore=args.zscore)
 
     # Get phthalate activities
     logger.info("Looking up phthalate activities...")
-    results_df = get_phthalate_activities(phthalates_df, activity_df)
+    results_df = get_phthalate_activities(phthalates_df, activity_df, metric=args.metric)
     logger.info(f"Found {len(results_df)} phthalates with activity data")
 
     if len(results_df) == 0:
@@ -499,8 +533,14 @@ def main():
 
     # Create plot
     suffix = "_combined" if args.stats else "_boxplot"
+    if args.zscore:
+        suffix = "_zscore" + suffix
+    if args.metric == "largest":
+        suffix = "_largest" + suffix
     output_path = OUTPUT_DIR / f"{output_name}{suffix}.png"
-    create_boxplot(results_df, output_path, title, do_stat_tests=args.stats)
+    create_boxplot(results_df, output_path, title, do_stat_tests=args.stats,
+                   ylabel="MAV (z-scored)" if args.zscore else "MAV",
+                   xlabel=metric_label)
 
     # Print summary statistics
     logger.info("Summary statistics:")

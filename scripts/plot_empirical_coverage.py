@@ -27,14 +27,14 @@ CACHE_DIR = PROJECT_ROOT / "cache"
 OUTPUT_DIR = CACHE_DIR / "empirical_coverage"
 
 
-def map_dtxsid_to_inchi(dtxsid: str) -> str:
+def map_casrn_to_inchi(casrn: str) -> str:
     """
-    Map DTXSID to InChI using CompTox Dashboard API.
+    Map CASRN to InChI using PubChem API.
 
     Parameters
     ----------
-    dtxsid : str
-        DSSTox Substance Identifier (e.g., DTXSID7020182)
+    casrn : str
+        CAS Registry Number (e.g., 50-00-0)
 
     Returns
     -------
@@ -44,70 +44,73 @@ def map_dtxsid_to_inchi(dtxsid: str) -> str:
     import requests
 
     try:
-        # CompTox API endpoint
-        url = f"https://comptox.epa.gov/dashboard-api/ccdapp2/chemical-detail/search/by-dtxsid/{dtxsid}"
+        # PubChem REST API - CAS to InChI
+        url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{casrn}/property/InChI/JSON"
         response = requests.get(url, timeout=10)
 
         if response.status_code == 200:
             data = response.json()
-            inchi = data.get('inchi', None)
-            return inchi
+            if 'PropertyTable' in data and 'Properties' in data['PropertyTable']:
+                props = data['PropertyTable']['Properties'][0]
+                inchi = props.get('InChI')
+                return inchi
+            return None
         else:
             return None
 
     except Exception as e:
-        logger.warning(f"Failed to map {dtxsid}: {e}")
+        # Silent failure for not found - too many warnings otherwise
         return None
 
 
-def build_dtxsid_to_inchi_cache(
-    dtxsids: Set[str],
+def build_casrn_to_inchi_cache(
+    casrns: Set[str],
     cache_path: Path
 ) -> Dict[str, str]:
     """
-    Build or load DTXSID → InChI mapping cache.
+    Build or load CASRN → InChI mapping cache.
 
     Parameters
     ----------
-    dtxsids : set of str
-        All DTXSID values to map
+    casrns : set of str
+        All CASRN values to map
     cache_path : Path
         Path to cache CSV file
 
     Returns
     -------
     dict
-        Mapping {dtxsid: inchi}
+        Mapping {casrn: inchi}
     """
     # Load existing cache if available
     if cache_path.exists():
-        logger.info(f"Loading DTXSID→InChI cache from {cache_path}")
+        logger.info(f"Loading CASRN→InChI cache from {cache_path}")
         cache_df = pd.read_csv(cache_path)
-        mapping = dict(zip(cache_df['dtxsid'], cache_df['inchi']))
+        mapping = dict(zip(cache_df['casrn'], cache_df['inchi']))
 
-        # Find DTXSIDs not in cache
-        missing = dtxsids - set(mapping.keys())
+        # Find CASRNs not in cache
+        missing = casrns - set(mapping.keys())
         logger.info(f"Cache contains {len(mapping)} mappings, {len(missing)} missing")
     else:
         mapping = {}
-        missing = dtxsids
-        logger.info(f"No cache found, will map {len(missing)} DTXSIDs")
+        missing = casrns
+        logger.info(f"No cache found, will map {len(missing)} CASRNs")
 
-    # Map missing DTXSIDs
+    # Map missing CASRNs
     if missing:
-        logger.info("Mapping DTXSIDs to InChI via CompTox API...")
+        logger.info("Mapping CASRNs to InChI via CompTox API...")
         from tqdm import tqdm
         import time
 
         new_mappings = []
-        for dtxsid in tqdm(missing, desc="Mapping DTXSIDs"):
-            inchi = map_dtxsid_to_inchi(dtxsid)
+        for casrn in tqdm(missing, desc="Mapping CASRNs"):
+            inchi = map_casrn_to_inchi(casrn)
             if inchi:
-                mapping[dtxsid] = inchi
-                new_mappings.append({'dtxsid': dtxsid, 'inchi': inchi})
+                mapping[casrn] = inchi
+                new_mappings.append({'casrn': casrn, 'inchi': inchi})
 
-            # Rate limiting
-            time.sleep(0.1)
+            # Rate limiting for PubChem API
+            time.sleep(0.2)
 
         # Update cache
         if new_mappings:
@@ -127,7 +130,7 @@ def build_dtxsid_to_inchi_cache(
 def create_empirical_coverage_matrix(
     empirical_pairs: pd.DataFrame,
     activity_matrix: pd.DataFrame,
-    dtxsid_to_inchi: Dict[str, str]
+    casrn_to_inchi: Dict[str, str]
 ) -> Tuple[np.ndarray, pd.Index, pd.Index]:
     """
     Create binary matrix showing empirical data coverage.
@@ -135,11 +138,11 @@ def create_empirical_coverage_matrix(
     Parameters
     ----------
     empirical_pairs : DataFrame
-        Columns: dtxsid, assay_token
+        Columns: casrn, assay_token
     activity_matrix : DataFrame
         Rows = InChI, Columns = assay titles
-    dtxsid_to_inchi : dict
-        DTXSID → InChI mapping
+    casrn_to_inchi : dict
+        CASRN → InChI mapping
 
     Returns
     -------
@@ -160,7 +163,8 @@ def create_empirical_coverage_matrix(
     token_map_path = CACHE_DIR / "entity_similarity" / "token_title_mapping.csv"
     if token_map_path.exists():
         token_map_df = pd.read_csv(token_map_path)
-        token_to_title = dict(zip(token_map_df['token'].astype(str), token_map_df['title']))
+        # Use 'property_token' column name
+        token_to_title = dict(zip(token_map_df['property_token'].astype(str), token_map_df['title']))
     else:
         logger.warning("Token mapping file not found, will use direct matching")
         token_to_title = {}
@@ -179,13 +183,13 @@ def create_empirical_coverage_matrix(
     unmatched_assay = set()
 
     for _, row in empirical_pairs.iterrows():
-        dtxsid = row['dtxsid']
+        casrn = row['casrn']
         assay_token = str(row['assay_token'])
 
-        # Map DTXSID to InChI
-        inchi = dtxsid_to_inchi.get(dtxsid)
+        # Map CASRN to InChI
+        inchi = casrn_to_inchi.get(casrn)
         if inchi is None or inchi not in chem_to_idx:
-            unmatched_chem.add(dtxsid)
+            unmatched_chem.add(casrn)
             continue
 
         # Map token to assay title
@@ -340,18 +344,18 @@ def main():
     activity_matrix = pd.read_parquet(activity_matrix_path)
     logger.info(f"Loaded activity matrix: {activity_matrix.shape[0]} chemicals × {activity_matrix.shape[1]} assays")
 
-    # Build DTXSID → InChI mapping
-    dtxsids = set(empirical_pairs['dtxsid'].dropna())
-    cache_path = CACHE_DIR / "dtxsid_to_inchi_cache.csv"
-    dtxsid_to_inchi = build_dtxsid_to_inchi_cache(dtxsids, cache_path)
+    # Build CASRN → InChI mapping
+    casrns = set(empirical_pairs['casrn'].dropna())
+    cache_path = CACHE_DIR / "casrn_to_inchi_cache.csv"
+    casrn_to_inchi = build_casrn_to_inchi_cache(casrns, cache_path)
 
-    logger.info(f"DTXSID→InChI mapping: {len(dtxsid_to_inchi)} chemicals")
+    logger.info(f"CASRN→InChI mapping: {len(casrn_to_inchi)} chemicals")
 
     # Create empirical coverage matrix
     coverage, chemicals, assays = create_empirical_coverage_matrix(
         empirical_pairs,
         activity_matrix,
-        dtxsid_to_inchi
+        casrn_to_inchi
     )
 
     # Plot empirical coverage
