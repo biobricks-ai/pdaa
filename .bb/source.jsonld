@@ -1,0 +1,67 @@
+{
+  "@context": "../../context/source.context.jsonld",
+  "@type": "dcat:Dataset",
+  "@id": "https://biobricks.ai/bricks/pdaa",
+  "dcterms:title": "PDAA \u2014 Phthalates Data Aggregation and Analysis (Insilica LLC / EMBSI)",
+  "dcterms:description": "The Phthalates Data Aggregation and Analysis (PDAA) project, developed by Insilica LLC in collaboration with EMBSI (ExxonMobil Biomedical Sciences), aggregating and analysing phthalate data for developmental and reproductive toxicity. Its DVC pipeline processes client-provided EMBSI Excel files (resources/embsi/*.xlsx: DNT and reprotox endpoint extractions) into parquet, builds a ZINC-derived phthalate compound set, and enriches it with ChemHarmony properties, PubTator mentions, and AOP-Wiki associations. The most restrictive component \u2014 the proprietary EMBSI-provided data and the redistribution-restricted ZINC compounds \u2014 governs.",
+  "dcterms:license": {
+    "@id": "proprietary",
+    "dcterms:title": "Proprietary/unstated \u2014 combines client-provided EMBSI data (no public license) with ZINC compounds (redistribution requires written permission); no open license granted"
+  },
+  "dcterms:creator": "Insilica LLC in collaboration with EMBSI (ExxonMobil Biomedical Sciences)",
+  "dcterms:publisher": "Insilica LLC",
+  "biobricks:licenseName": "Proprietary / unstated (client EMBSI data + ZINC)",
+  "biobricks:licenseClass": "restricted",
+  "biobricks:merckCommercialUse": "prohibited",
+  "biobricks:licenseEvidence": [
+    {
+      "source": "README.md",
+      "quote": "developed by Insilica LLC in collaboration with EMBSI ... Many deliverables for this project rely on repositories developed externally to this repository.",
+      "confidence": "high"
+    },
+    {
+      "source": "stages/01_process_embsi_files.py",
+      "quote": "embsi_files = list(f for f in pathlib.Path('resources/embsi').rglob('*.xlsx') if 'processed' in str(f).lower()) ... create parquet files from provided embsi documents",
+      "confidence": "high"
+    },
+    {
+      "source": ".bb/dependencies.txt",
+      "quote": "https://github.com/biobricks-ai/zinc#984ceba0... ; https://github.com/biobricks-ai/chemharmony#701759...",
+      "confidence": "high"
+    }
+  ],
+  "biobricks:reviewed": false,
+  "biobricks:reviewNotes": "Determined by the BioBricks licensing-provenance annotation agent (Claude). PDAA is a client engagement (Insilica LLC + EMBSI/ExxonMobil) whose pipeline consumes proprietary EMBSI-provided Excel deliverables (resources/embsi/*.xlsx) with NO public license, and further combines ZINC-derived phthalate compounds (ZINC redistribution requires written permission from its authors) plus ChemHarmony, PubTator and AOP-Wiki. The most-restrictive component governs: the confidential client data alone makes this non-redistributable, so licenseClass=restricted and merckCommercialUse=prohibited. HUMAN REVIEW REQUIRED: this brick contains client-confidential EMBSI data and should NOT be redistributed to any third party (including Merck) absent explicit contractual permission; also confirm the ZINC and ChemHarmony source-license terms.",
+  "prov:wasDerivedFrom": [
+    {
+      "@type": "dcat:Dataset",
+      "@id": "https://github.com/biobricks-ai/pdaa",
+      "dcterms:title": "EMBSI-provided phthalate endpoint data (DNT and reprotox extractions)",
+      "dcterms:license": {
+        "@id": "UNSTATED",
+        "dcterms:title": "Client-confidential EMBSI deliverables \u2014 no public license"
+      },
+      "dcterms:publisher": "EMBSI (ExxonMobil Biomedical Sciences) via Insilica LLC"
+    },
+    {
+      "@type": "dcat:Dataset",
+      "@id": "https://github.com/biobricks-ai/zinc",
+      "dcterms:title": "ZINC database of commercially-available compounds (phthalate subset)",
+      "dcterms:license": {
+        "@id": "proprietary",
+        "dcterms:title": "ZINC \u2014 free to use, redistribution requires written permission from John Irwin"
+      },
+      "dcterms:publisher": "UCSF (docking.org)"
+    },
+    {
+      "@type": "dcat:Dataset",
+      "@id": "https://github.com/biobricks-ai/chemharmony",
+      "dcterms:title": "ChemHarmony (harmonized substance-property-value database, 15 sources)",
+      "dcterms:license": {
+        "@id": "UNSTATED",
+        "dcterms:title": "ChemHarmony \u2014 combined license of upstream source databases; not separately stated"
+      },
+      "dcterms:publisher": "biobricks-ai"
+    }
+  ]
+}
