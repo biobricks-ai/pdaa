@@ -30,6 +30,10 @@ from rdkit import Chem
 sys.path.append('./')
 from scripts.utils.helpers import largest_carbon_backbone
 
+import os as _os
+_MATRIX_OVERRIDE = _os.environ.get("PDAA_ACTIVITY_MATRIX")
+
+
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -92,7 +96,7 @@ def assign_chain_group(smiles: str) -> str:
 
 def load_activity_data(zscore: bool = False) -> pd.DataFrame:
     """Load the activity matrix from parquet."""
-    activity_path = CACHE_DIR / "entity_similarity" / "activity_matrix_filled.parquet"
+    activity_path = Path(_MATRIX_OVERRIDE) if _MATRIX_OVERRIDE else CACHE_DIR / "entity_similarity" / "activity_matrix_filled.parquet"
     df = pd.read_parquet(activity_path)
     if zscore:
         df = (df - df.mean(axis=0)) / df.std(axis=0)

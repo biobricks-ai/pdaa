@@ -28,6 +28,11 @@ except ImportError:  # fall back to statsmodels LOWESS (no confidence bands)
     loess = None
 
 import sys
+
+from pathlib import Path as _P
+import os as _os
+_MATRIX_OVERRIDE = _os.environ.get("PDAA_ACTIVITY_MATRIX")
+
 sys.path.append('./')
 
 logger = logging.getLogger(__name__)
@@ -84,7 +89,7 @@ def loess_residuals(x, y, span=0.5):
 
 
 def load_data():
-    activity = pd.read_parquet(CACHEDIR / 'activity_matrix_filled.parquet')
+    activity = pd.read_parquet(_P(_MATRIX_OVERRIDE) if _MATRIX_OVERRIDE else CACHEDIR / 'activity_matrix_filled.parquet')
     Z = (activity - activity.mean(axis=0)) / activity.std(axis=0)
     mav = Z.mean(axis=1)
     mav.name = 'MAV'

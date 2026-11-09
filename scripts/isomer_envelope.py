@@ -35,24 +35,40 @@ import pandas as pd
 from rdkit import Chem
 from scipy.stats import mannwhitneyu
 
+from pathlib import Path
+import os as _os
+_MATRIX_OVERRIDE = _os.environ.get("PDAA_ACTIVITY_MATRIX")
+
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 CACHEDIR = pathlib.Path("cache/entity_similarity")
 OUTDIR = pathlib.Path("cache/isomer_envelope")
 
-UVCBS = [
-    {"abbrev": "DEHP", "formula": "C24H38O4", "nominal_c": 8,
-     "smiles": "CCCCC(CC)COC(=O)c1ccccc1C(=O)OCC(CC)CCCC"},
-    {"abbrev": "DINP", "formula": "C26H42O4", "nominal_c": 9,
-     "smiles": "CCCC(C)C(C)CCOC(=O)c1ccccc1C(=O)OCCC(C)C(C)CCC"},
-    {"abbrev": "DIDP", "formula": "C28H46O4", "nominal_c": 10,
-     "smiles": "CCCC(C)CC(C)CCOC(=O)c1ccccc1C(=O)OCCC(C)CC(C)CCC"},
-    {"abbrev": "DIUP", "formula": "C30H50O4", "nominal_c": 11,
-     "smiles": "CC(C)CCCCCCCCOC(=O)c1ccccc1C(=O)OCCCCCCCCC(C)C"},
-    {"abbrev": "DTDP", "formula": "C34H58O4", "nominal_c": 13,
-     "smiles": "CC(C)CCCCCCCCCCOC(=O)c1ccccc1C(=O)OCCCCCCCCCCC(C)C"},
-]
+# Representative structures are read from the canonical commercial list rather than
+# hard-coded, so they cannot drift out of step with it. A hard-coded DTDP previously
+# lagged the 2026-07-17 revision to the internally di-branched convention, which put
+# this figure on a different structure from the rest of the analysis.
+_COMMERCIAL = pathlib.Path("resources/phthalate_lists/commercial_top20.csv")
+_NOMINAL_C = {"DEHP": 8, "DINP": 9, "DIDP": 10, "DIUP": 11, "DTDP": 13}
+
+
+def _load_uvcbs():
+    import pandas as pd
+    from rdkit import Chem
+    from rdkit.Chem import rdMolDescriptors
+    df = pd.read_csv(_COMMERCIAL).set_index("abbreviation")
+    out = []
+    for ab, nominal in _NOMINAL_C.items():
+        smi = df.loc[ab, "smiles"]
+        mol = Chem.MolFromSmiles(smi)
+        out.append({"abbrev": ab, "formula": rdMolDescriptors.CalcMolFormula(mol),
+                    "nominal_c": nominal, "smiles": smi})
+    return out
+
+
+UVCBS = _load_uvcbs()
 PLOT_ORDER = ["DEHP", "DINP", "DIDP", "DIUP", "DTDP"]
 BOX_COLOR = "#7eb8da"
 REP_COLOR = "#e07b54"
@@ -64,12 +80,20 @@ def formula_from_inchi(inchi: str) -> str | None:
 
 
 def has_defined_stereo(inchi: str) -> bool:
-    """True if the InChI carries a defined tetrahedral stereo layer."""
-    return "/t" in inchi and ("/m" in inchi or "/s" in inchi)
+    """True if the InChI carries any defined stereochemistry.
+
+    The earlier test required /t together with /m or /s. An InChI with relative
+    tetrahedral stereochemistry carries /t alone (e.g. .../t23-,24+ with no /m or /s),
+    so that test let stereo-defined isomers into the achiral set. Because such isomers
+    score systematically higher, a single leaked structure could dominate a formula's
+    envelope: the C28H46O4 (DIDP) envelope maximum of +2.38 was one, and it set the
+    y-axis of the UVCB figure. Any /t or /b layer now counts as defined stereochemistry.
+    """
+    return "/t" in inchi or "/b" in inchi
 
 
 def load_mav() -> pd.Series:
-    activity = pd.read_parquet(CACHEDIR / "activity_matrix_filled.parquet")
+    activity = pd.read_parquet(Path(_MATRIX_OVERRIDE) if _MATRIX_OVERRIDE else CACHEDIR / "activity_matrix_filled.parquet")
     z = (activity - activity.mean(axis=0)) / activity.std(axis=0)
     mav = z.mean(axis=1)
     mav.name = "MAV"

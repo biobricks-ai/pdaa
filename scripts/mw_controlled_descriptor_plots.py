@@ -38,6 +38,10 @@ from scripts.utils.helpers import (
     get_example_phthalates_df,
 )
 
+from pathlib import Path
+import os as _os
+_MATRIX_OVERRIDE = _os.environ.get("PDAA_ACTIVITY_MATRIX")
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -57,7 +61,7 @@ METRICS = {
 
 
 def load_data():
-    activity_parquet = CACHEDIR / 'activity_matrix_filled.parquet'
+    activity_parquet = Path(_MATRIX_OVERRIDE) if _MATRIX_OVERRIDE else CACHEDIR / 'activity_matrix_filled.parquet'
     activity_matrix = pd.read_parquet(activity_parquet)
     Z_activity = (activity_matrix - activity_matrix.mean(axis=0)) / activity_matrix.std(axis=0)
     mav = Z_activity.mean(axis=1)
